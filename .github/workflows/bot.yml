@@ -22,15 +22,36 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 20
+
+      # keeps the Xbox login between runs so you only sign in once
+      - name: Restore Xbox login cache
+        uses: actions/cache/restore@v4
+        with:
+          path: auth
+          key: mc-auth-${{ github.run_id }}
+          restore-keys: mc-auth-
+
       - run: npm install --no-audit --no-fund
+
       - name: Run bot
         env:
           MC_HOST: ${{ secrets.MC_HOST }}
           MC_PORT: ${{ secrets.MC_PORT }}
           MC_VERSION: ${{ vars.MC_VERSION }}
-          MC_OFFLINE: ${{ vars.MC_OFFLINE }}
+          MC_AUTH: xbox # change to "cracked" to join without an Xbox account
+          MC_USERNAME: ${{ secrets.MC_USERNAME }} # any label, only names the token cache
+          AUTH_DIR: auth
           MAX_RUNTIME_MIN: 340
         run: node bedrock-bot.js
+
+      - name: Save Xbox login cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: auth
+          key: mc-auth-${{ github.run_id }}
+
       - name: Start next run
         if: always()
         env:
