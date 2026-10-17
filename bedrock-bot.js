@@ -14,8 +14,8 @@
 const bedrock = require('bedrock-protocol');
 
 const CFG = {
-  host: process.env.MC_HOST || 'localhost',
-  port: parseInt(process.env.MC_PORT || '19132', 10), // Geyser's BEDROCK port
+  host: process.env.MC_HOST || '45.138.48.34',
+  port: parseInt(process.env.MC_PORT || '26564', 10), // Geyser's BEDROCK port
   version: process.env.MC_VERSION || undefined, // e.g. 1.21.80 (leave empty = auto)
   // cracked: the in-game name. Xbox mode: the Microsoft account email (name comes from the gamertag)
   username: process.env.MC_USERNAME || 'NexusGaming019',
