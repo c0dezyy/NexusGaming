@@ -18,7 +18,7 @@ const CFG = {
   port: parseInt(process.env.MC_PORT || '26564', 10), // Geyser's BEDROCK port
   version: process.env.MC_VERSION || undefined, // e.g. 1.21.80 (leave empty = auto)
   // cracked: the in-game name. Xbox mode: the Microsoft account email (name comes from the gamertag)
-  username: process.env.MC_USERNAME || 'NexusGaming019',
+  username: process.env.MC_USERNAME || 'nbody8881@gmail.com',
   xbox: process.env.MC_AUTH === 'xbox', // real Microsoft/Xbox login (set MC_AUTH=xbox)
   offline: process.env.MC_AUTH !== 'xbox' && process.env.MC_OFFLINE !== 'false',
   authDir: process.env.AUTH_DIR || './auth', // token cache; put this on a persistent volume
