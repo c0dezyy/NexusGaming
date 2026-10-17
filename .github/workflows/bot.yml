@@ -1,1 +1,38 @@
+name: Minecraft Bedrock Bot
 
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *' # fallback restart if the chain ever breaks
+
+concurrency:
+  group: mc-bot
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Run bot
+        env:
+          MC_HOST: ${{ secrets.MC_HOST }}
+          MC_PORT: ${{ secrets.MC_PORT }}
+          MC_VERSION: ${{ vars.MC_VERSION }}
+          MC_OFFLINE: ${{ vars.MC_OFFLINE }}
+          MAX_RUNTIME_MIN: 340
+        run: node bedrock-bot.js
+      - name: Start next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml
