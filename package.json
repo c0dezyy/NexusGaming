@@ -1,0 +1,12 @@
+{
+  "name": "nexusgaming019-bedrock-bot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "bedrock-bot.js",
+  "scripts": {
+    "start": "node bedrock-bot.js"
+  },
+  "dependencies": {
+    "bedrock-protocol": "^3.40.0"
+  }
+}

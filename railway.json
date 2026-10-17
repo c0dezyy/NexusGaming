@@ -1,0 +1,7 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "node bedrock-bot.js",
+    "restartPolicyType": "ALWAYS"
+  }
+}
