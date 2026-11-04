@@ -171,7 +171,7 @@ function createBot() {
       auth: config['bot-account'].type,
       host: config.server.ip,
       port: config.server.port,
-      version: config.server.version,
+      version: config.server.version || undefined, // blank = auto-detect the server version
       hideErrors: false,
       checkTimeoutInterval: 120000,
       viewDistance: 'short',
@@ -380,6 +380,7 @@ function startBrain(b) {
   moves.canDig = false;
   moves.allow1by1towers = false;
   moves.allowParkour = false;
+  moves.allowSprinting = false;
   moves.maxDropDown = 2;
   moves.scafoldingBlocks = [];
   moves.liquidCost = 50;
@@ -421,7 +422,7 @@ function startBrain(b) {
   setMode('idle', 300);
 
   // true if walking this way hits lava/water/fire, a 3+ block drop, a deep descent or a dark cave
-  function unsafeAhead(yaw) {
+  function computeUnsafeAhead(yaw) {
     const p = b.entity.position;
     for (const d of [1.0, 2.0, 3.0]) {
       const f = p.offset(-Math.sin(yaw) * d, 0, -Math.cos(yaw) * d).floored();
@@ -437,6 +438,30 @@ function startBrain(b) {
       }
     }
     return false;
+  }
+
+  // the scan is cached for 250 ms so the 20 Hz loop stays light (lag causes bursts of position packets)
+  const aheadCache = new Map();
+  let aheadCacheT = 0;
+  function unsafeAhead(yaw) {
+    const t = Date.now();
+    if (t - aheadCacheT > 250) { aheadCache.clear(); aheadCacheT = t; }
+    const k = Math.round(yaw * 8);
+    if (aheadCache.has(k)) return aheadCache.get(k);
+    const r = computeUnsafeAhead(yaw);
+    aheadCache.set(k, r);
+    return r;
+  }
+
+  // 'free' = nothing in the way, 'step' = 1-block step we can jump, 'wall' = cannot be climbed
+  function obstacleAhead(yaw) {
+    const p = b.entity.position;
+    const f = p.offset(-Math.sin(yaw) * 0.9, 0, -Math.cos(yaw) * 0.9).floored();
+    const front = b.blockAt(f);
+    if (!front || front.boundingBox !== 'block') return 'free';
+    if (/fence|_wall|gate/.test(front.name)) return 'wall';
+    const clear = (x) => !x || x.boundingBox === 'empty';
+    return clear(b.blockAt(f.offset(0, 1, 0))) && clear(b.blockAt(f.offset(0, 2, 0))) ? 'step' : 'wall';
   }
 
   function pickSafeHeading(base) {
@@ -797,10 +822,20 @@ function startBrain(b) {
       S.nextHop = now + rand(8000, 15000);
     }
 
+    let jump = liquid || now < S.hopUntil;
+    if (moving && !liquid) {
+      const ob = obstacleAhead(S.yaw);
+      if (ob === 'step') { if (b.entity.onGround) jump = true; sprint = false; }
+      else if (ob === 'wall') {
+        S.heading = S.yaw + rand(2.0, 4.0); // never push into walls/fences
+        S.lastTurn = now;
+        moving = false;
+      }
+    }
+
     b.look(S.yaw, S.pitch, true);
     b.setControlState('forward', moving);
     b.setControlState('sprint', moving && sprint);
-    const jump = (moving && b.entity.isCollidedHorizontally) || liquid || now < S.hopUntil;
     b.setControlState('jump', !!jump);
     botState.lastActivity = now;
   }
