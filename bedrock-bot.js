@@ -2,27 +2,23 @@
 /**
  * NexusGaming019 - Bedrock edition bot (bedrock-protocol), for Geyser / Bedrock servers.
  *
- * IMPORTANT: bedrock-protocol only gives raw packets. There is no terrain, physics or
- * pathfinding, so this bot is "terrain blind". To stay safe it:
- *   - stays inside a leash radius around its spawn point
- *   - treats any server position correction as "I hit something" and turns away
- *   - flees from hostile mobs it can see in entity packets
- *   - approaches a joining player to ~14 blocks, then goes back to wandering
- *   - stands still at night (set_time) instead of wandering
- * It cannot dig, hunt, eat, avoid holes/water or check caves. Use the Java bot for that.
+ * Terrain blind (raw packets only). It stays inside a leash radius, flees hostile mobs,
+ * visits joining players, and keeps walking. Night rest is OFF by default (NIGHT_REST=true to enable).
+ * Set MC_DEBUG=true for verbose logs.
  */
 const bedrock = require('bedrock-protocol');
 
 const CFG = {
   host: process.env.MC_HOST || '15.235.165.81',
   port: parseInt(process.env.MC_PORT || '26179', 10), // Geyser's BEDROCK port
-  version: process.env.MC_VERSION || undefined, // e.g. 1.21.80 (leave empty = auto)
-  // cracked: the in-game name. Xbox mode: the Microsoft account email (name comes from the gamertag)
+  version: process.env.MC_VERSION || undefined,
   username: process.env.MC_USERNAME || 'nbody8881@gmail.com',
-  xbox: process.env.MC_AUTH === 'xbox', // real Microsoft/Xbox login (set MC_AUTH=xbox)
+  xbox: process.env.MC_AUTH === 'xbox',
   offline: process.env.MC_AUTH !== 'xbox' && process.env.MC_OFFLINE !== 'false',
-  authDir: process.env.AUTH_DIR || './auth', // token cache; put this on a persistent volume
+  authDir: process.env.AUTH_DIR || './auth',
   maxRuntimeMs: (parseFloat(process.env.MAX_RUNTIME_MIN || '0') || 0) * 60000,
+  nightRest: process.env.NIGHT_REST === 'true',
+  debug: process.env.MC_DEBUG === 'true',
   leash: 22,
   visitDistance: 14,
 };
@@ -31,6 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand = (a, b) => a + Math.random() * (b - a);
 const key = (v) => String(v);
 const DEG = 180 / Math.PI;
+const dbg = (...a) => { if (CFG.debug) console.log('[dbg]', ...a); };
 
 const HOSTILE = new Set([
   'zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider',
@@ -55,8 +52,6 @@ function launch() {
     connectTimeout: 30000,
   };
   if (CFG.xbox) {
-    // First run prints a code in the logs: open the link, enter the code, sign in.
-    // The token is then cached in AUTH_DIR and refreshed automatically.
     opts.profilesFolder = CFG.authDir;
     opts.onMsaCode = (d) => console.log(`\n[auth] Open ${d.verification_uri} and enter code: ${d.user_code}\n`);
   }
@@ -66,8 +61,11 @@ function launch() {
   const S = {
     pos: null, origin: null, rid: null, yaw: rand(0, 360), pitch: 0, tick: 0n,
     ents: new Map(), visit: [], lastVisit: {}, night: false,
-    mode: 'idle', until: 0, modeStart: 0, heading: 0, lookAt: 0, nextLook: 0,
-    lastCorrect: 0, wasSprint: false, loop: null, warned: false, visitTarget: null,
+    mode: 'idle', until: 0, modeStart: 0, heading: 0, nextLook: 0,
+    wasSprint: false, loop: null, beat: null, visitTarget: null,
+    teleported: false, corrections: 0, sent: 0, sendErrors: 0, lastErrLog: 0,
+    sx: 0, sz: 0, sampleT: 0, lastTurn: 0, stuck: 0,
+    beatX: 0, beatZ: 0,
   };
 
   const setMode = (m, ms) => { S.mode = m; S.modeStart = Date.now(); S.until = Date.now() + ms; };
@@ -77,6 +75,8 @@ function launch() {
     S.rid = p.runtime_entity_id;
     S.pos = { ...p.player_position };
     S.origin = { ...p.player_position };
+    try { if (p.current_tick !== undefined) S.tick = BigInt(p.current_tick); } catch (e) { /* ignore */ }
+    dbg('start_game pos', S.pos, 'movement', JSON.stringify(p.player_movement_settings || p.movement_authority));
   });
 
   client.on('add_entity', (p) => {
@@ -100,14 +100,16 @@ function launch() {
   client.on('move_player', (p) => {
     if (key(p.runtime_id) === key(S.rid)) {
       S.pos = { ...p.position };
-      S.lastCorrect = Date.now();
+      S.corrections++;
+      if (p.mode === 'teleport') S.teleported = true; // confirm it on the next input packet
+      dbg('server move_player', p.mode, S.pos);
     } else {
       const e = S.ents.get(key(p.runtime_id));
       if (e && p.position) e.pos = { ...p.position };
     }
   });
   client.on('correct_player_move_prediction', (p) => {
-    if (p.position) { S.pos = { ...p.position }; S.lastCorrect = Date.now(); }
+    if (p.position) { S.pos = { ...p.position }; S.corrections++; dbg('server correction', S.pos); }
   });
 
   client.on('player_list', (p) => {
@@ -115,7 +117,7 @@ function launch() {
       if (!p.records || p.records.type !== 'add') return;
       for (const r of p.records.records) {
         if (!r.username || r.username === CFG.username) continue;
-        if (client.profile && r.username === client.profile.name) continue; // ourselves (Xbox gamertag)
+        if (client.profile && r.username === client.profile.name) continue;
         const last = S.lastVisit[r.username] || 0;
         if (Date.now() - last < 10 * 60 * 1000) continue;
         S.lastVisit[r.username] = Date.now();
@@ -125,7 +127,7 @@ function launch() {
   });
 
   client.on('set_time', (p) => {
-    const t = Number(p.time) % 24000;
+    const t = ((Number(p.time) % 24000) + 24000) % 24000;
     S.night = t >= 13000 && t < 23000;
   });
 
@@ -140,9 +142,28 @@ function launch() {
   client.on('spawn', () => {
     console.log(`[bot] spawned as ${CFG.username}`);
     backoff = 8000;
-    setMode('idle', rand(3000, 6000));
+    if (S.loop) clearInterval(S.loop); // never run two loops
+    if (S.beat) clearInterval(S.beat);
+    setMode('idle', rand(1000, 2000));
     S.loop = setInterval(step, 50);
+    S.beatX = S.pos ? S.pos.x : 0;
+    S.beatZ = S.pos ? S.pos.z : 0;
+    S.beat = setInterval(heartbeat, 5000);
   });
+
+  // ---------- diagnostics ----------
+  function heartbeat() {
+    if (!S.pos) return;
+    const moved = Math.hypot(S.pos.x - S.beatX, S.pos.z - S.beatZ);
+    S.beatX = S.pos.x; S.beatZ = S.pos.z;
+    console.log(
+      `[bot] mode=${S.mode} pos=(${S.pos.x.toFixed(1)}, ${S.pos.y.toFixed(1)}, ${S.pos.z.toFixed(1)}) ` +
+      `moved5s=${moved.toFixed(1)} sent=${S.sent} corrections=${S.corrections} stuckTurns=${S.stuck} sendErrors=${S.sendErrors}`
+    );
+    if (moved < 0.5 && S.mode === 'walk') {
+      console.log('[bot] WARNING: walking but not moving. Server is rubber-banding us, or a login/auth plugin is freezing the player.');
+    }
+  }
 
   // ---------- brain + movement (20 ticks/s) ----------
   function nearestThreat() {
@@ -160,7 +181,7 @@ function launch() {
   }
 
   const headingTo = (tx, tz) => Math.atan2(-(tx - S.pos.x), tz - S.pos.z) * DEG;
-  const norm = (a) => ((a + 540) % 360) - 180;
+  const norm = (a) => ((a % 360 + 540) % 360) - 180;
 
   function pickWalkHeading() {
     const dx = S.origin.x - S.pos.x;
@@ -183,30 +204,26 @@ function launch() {
       moving = true;
       sprint = true;
     } else if (S.mode === 'flee') {
-      setMode('idle', rand(1500, 3000));
+      setMode('idle', rand(1000, 2000));
     } else if (S.mode === 'idle') {
       if (now > S.until) {
         const v = S.visit.find((x) => now >= x.at);
-        if (v && !S.night) {
+        const resting = CFG.nightRest && S.night;
+        if (v && !resting) {
           S.visit.splice(S.visit.indexOf(v), 1);
           const target = [...S.ents.values()].find((e) => e.name === 'player' && e.username === v.name);
           if (target) { S.visitTarget = target; setMode('visit', 25000); }
           else if (v.tries < 3) S.visit.push({ name: v.name, at: now + 6000, tries: v.tries + 1 });
-        } else if (S.night) {
-          S.until = now + rand(4000, 9000); // stand still at night
+        } else if (resting) {
+          S.until = now + rand(4000, 9000);
         } else {
           S.heading = pickWalkHeading();
-          setMode('walk', rand(2000, 6000));
+          setMode('walk', rand(3000, 7000));
         }
       }
     } else if (S.mode === 'walk') {
       moving = true;
-      if (S.lastCorrect > S.modeStart) { // server pushed us back -> obstacle
-        S.heading += rand(100, 220);
-        S.modeStart = now;
-        if (Math.random() < 0.3) setMode('idle', rand(800, 2500));
-      }
-      if (now > S.until) setMode('idle', rand(1500, 6000));
+      if (now > S.until) setMode('idle', rand(800, 2500));
     } else if (S.mode === 'visit') {
       const t = S.visitTarget;
       if (!t || now > S.until) { S.visitTarget = null; setMode('idle', rand(2000, 5000)); }
@@ -215,12 +232,11 @@ function launch() {
         if (d > CFG.visitDistance) { S.heading = headingTo(t.pos.x, t.pos.z); moving = true; }
         else if (d < 9) { S.heading = headingTo(t.pos.x, t.pos.z) + 180; moving = true; }
         else { S.visitTarget = null; setMode('idle', rand(3000, 8000)); }
-        if (S.lastCorrect > S.modeStart) { S.heading += rand(60, 140); S.modeStart = now; }
       }
     }
 
-    // human-like look drift while idle
-    if (!moving && now > S.nextLook) {
+    // look drift only while truly idle
+    if (!moving && S.mode === 'idle' && now > S.nextLook) {
       S.heading = S.yaw + rand(-80, 80);
       S.pitch = rand(-18, 18);
       S.nextLook = now + rand(1200, 4000);
@@ -228,8 +244,22 @@ function launch() {
 
     // smooth turning
     const diff = norm(S.heading - S.yaw);
-    S.yaw = norm(S.yaw + Math.max(-7, Math.min(7, diff)));
+    S.yaw = norm(S.yaw + Math.max(-12, Math.min(12, diff)));
     if (moving && Math.abs(diff) > 70) moving = false; // turn first, then walk
+
+    // stuck detection based on REAL progress (our position is snapped back when the server pushes us)
+    if (!moving) {
+      S.sampleT = now; S.sx = S.pos.x; S.sz = S.pos.z;
+    } else if (now - S.sampleT > 1000) {
+      const progress = Math.hypot(S.pos.x - S.sx, S.pos.z - S.sz);
+      S.sampleT = now; S.sx = S.pos.x; S.sz = S.pos.z;
+      if (progress < 1.2 && now - S.lastTurn > 1000) {
+        S.heading += rand(100, 220); // blocked -> turn away
+        S.lastTurn = now;
+        S.stuck++;
+        dbg('stuck, turning. progress', progress.toFixed(2));
+      }
+    }
 
     sendInput(moving, sprint);
   }
@@ -242,35 +272,50 @@ function launch() {
     S.pos.x += dx;
     S.pos.z += dz;
     S.tick += 1n;
+
     const flags = {
       up: moving,
       sprint_down: moving && sprint,
       sprinting: moving && sprint,
       start_sprinting: moving && sprint && !S.wasSprint,
       stop_sprinting: S.wasSprint && !(moving && sprint),
+      handled_teleport: S.teleported,
     };
+    S.teleported = false;
     S.wasSprint = moving && sprint;
     const mv = { x: 0, z: moving ? 1 : 0 };
+
+    // Superset of fields across protocol versions (unknown extra fields are ignored by the serializer,
+    // but a MISSING required field throws).
+    const packet = {
+      pitch: S.pitch,
+      yaw: S.yaw,
+      position: { x: S.pos.x, y: S.pos.y, z: S.pos.z },
+      move_vector: mv,
+      head_yaw: S.yaw,
+      input_data: flags,
+      input_mode: 'mouse',
+      play_mode: 'normal',
+      interaction_model: 'classic',
+      interact_rotation: { x: S.pitch, z: S.yaw },
+      gaze_direction: { x: 0, y: 0, z: 0 },
+      tick: S.tick,
+      delta: { x: dx, y: 0, z: dz },
+      client_predicted_velocity: { x: dx, y: 0, z: dz },
+      analogue_move_vector: mv,
+      raw_move_vector: mv,
+      camera_orientation: { x: 0, y: 0, z: 0 },
+    };
     try {
-      client.queue('player_auth_input', {
-        pitch: S.pitch,
-        yaw: S.yaw,
-        position: { x: S.pos.x, y: S.pos.y, z: S.pos.z },
-        move_vector: mv,
-        head_yaw: S.yaw,
-        input_data: flags,
-        input_mode: 'mouse',
-        play_mode: 'screen',
-        interaction_model: 'classic',
-        interact_rotation: { x: S.pitch, z: S.yaw },
-        tick: S.tick,
-        delta: { x: dx, y: 0, z: dz },
-        analogue_move_vector: mv,
-        raw_move_vector: mv,
-        camera_orientation: { x: 0, y: 0, z: 0 },
-      });
+      client.queue('player_auth_input', packet);
+      S.sent++;
     } catch (e) {
-      if (!S.warned) { S.warned = true; console.log('[bot] player_auth_input failed (version mismatch?):', e && e.message); }
+      S.sendErrors++;
+      const now = Date.now();
+      if (now - S.lastErrLog > 5000) {
+        S.lastErrLog = now;
+        console.log('[bot] player_auth_input FAILED to serialize (set MC_VERSION to your exact server version):', e && e.message);
+      }
     }
   }
 
@@ -279,6 +324,7 @@ function launch() {
   client.on('error', (e) => console.log('[bot] error:', e && e.message));
   client.on('close', () => {
     clearInterval(S.loop);
+    clearInterval(S.beat);
     console.log('[bot] disconnected');
     if (stopping) return;
     const wait = backoff * rand(0.8, 1.3);
