@@ -65,7 +65,7 @@ function launch() {
     wasSprint: false, loop: null, beat: null, visitTarget: null,
     teleported: false, corrections: 0, sent: 0, sendErrors: 0, lastErrLog: 0,
     sx: 0, sz: 0, sampleT: 0, lastTurn: 0, stuck: 0,
-    beatX: 0, beatZ: 0,
+    beatX: 0, beatZ: 0, holdUntil: 0, started: false,
   };
 
   const setMode = (m, ms) => { S.mode = m; S.modeStart = Date.now(); S.until = Date.now() + ms; };
@@ -101,7 +101,7 @@ function launch() {
     if (key(p.runtime_id) === key(S.rid)) {
       S.pos = { ...p.position };
       S.corrections++;
-      if (p.mode === 'teleport') S.teleported = true; // confirm it on the next input packet
+      if (p.mode === 'teleport') { S.teleported = true; S.holdUntil = Date.now() + 700; } // stand still so the server can confirm the teleport
       dbg('server move_player', p.mode, S.pos);
     } else {
       const e = S.ents.get(key(p.runtime_id));
@@ -139,16 +139,32 @@ function launch() {
     } catch (e) { /* ignore */ }
   });
 
-  client.on('spawn', () => {
-    console.log(`[bot] spawned as ${CFG.username}`);
+  function startLoop(why) {
+    if (S.started || !S.pos) return;
+    S.started = true;
+    console.log(`[bot] movement loop started (${why}) as ${CFG.username}`);
     backoff = 8000;
-    if (S.loop) clearInterval(S.loop); // never run two loops
+    if (S.loop) clearInterval(S.loop);
     if (S.beat) clearInterval(S.beat);
-    setMode('idle', rand(1000, 2000));
+    setMode('idle', rand(1500, 2500));
     S.loop = setInterval(step, 50);
-    S.beatX = S.pos ? S.pos.x : 0;
-    S.beatZ = S.pos ? S.pos.z : 0;
+    S.beatX = S.pos.x;
+    S.beatZ = S.pos.z;
     S.beat = setInterval(heartbeat, 5000);
+  }
+
+  client.on('spawn', () => startLoop('spawn event'));
+  client.on('play_status', (p) => {
+    console.log('[bot] play_status:', p && p.status);
+    if (p && p.status === 'player_spawn') setTimeout(() => startLoop('player_spawn'), 1500);
+  });
+  client.on('join', () => console.log('[bot] joined (login ok)'));
+  client.on('disconnect', (p) => console.log('[bot] server disconnect:', p && (p.message || JSON.stringify(p))));
+  client.on('transfer', (p) => console.log('[bot] server wants transfer:', JSON.stringify(p)));
+  client.on('text', (p) => { if (p && p.message) console.log('[chat]', p.source_name || '', String(p.message).slice(0, 200)); });
+  client.on('start_game', () => {
+    // fallback: if no spawn event arrives, start anyway
+    setTimeout(() => { if (!S.started) startLoop('fallback timer'); }, 12000);
   });
 
   // ---------- diagnostics ----------
@@ -261,6 +277,7 @@ function launch() {
       }
     }
 
+    if (now < S.holdUntil) moving = false;
     sendInput(moving, sprint);
   }
 
@@ -280,6 +297,7 @@ function launch() {
       start_sprinting: moving && sprint && !S.wasSprint,
       stop_sprinting: S.wasSprint && !(moving && sprint),
       handled_teleport: S.teleported,
+      block_breaking_delay_enabled: true,
     };
     S.teleported = false;
     S.wasSprint = moving && sprint;
