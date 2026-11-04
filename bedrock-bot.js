@@ -1,34 +1,309 @@
 'use strict';
-/**
- * NexusGaming019 - Bedrock edition bot (bedrock-protocol), for Geyser / Bedrock servers.
- *
- * Terrain blind (raw packets only). It stays inside a leash radius, flees hostile mobs,
- * visits joining players, and keeps walking. Night rest is OFF by default (NIGHT_REST=true to enable).
- * Set MC_DEBUG=true for verbose logs.
- */
-const bedrock = require('bedrock-protocol');
+const mineflayer = require('mineflayer');
+const config = require('./settings.json');
+const express = require('express');
+const http = require('http');
+const https = require('https');
+const readline = require('readline');
 
-const CFG = {
-  host: process.env.MC_HOST || '15.235.165.81',
-  port: parseInt(process.env.MC_PORT || '26179', 10), // Geyser's BEDROCK port
-  version: process.env.MC_VERSION || undefined,
-  username: process.env.MC_USERNAME || 'nbody8881@gmail.com',
-  xbox: process.env.MC_AUTH === 'xbox',
-  offline: process.env.MC_AUTH !== 'xbox' && process.env.MC_OFFLINE !== 'false',
-  authDir: process.env.AUTH_DIR || './auth',
-  maxRuntimeMs: (parseFloat(process.env.MAX_RUNTIME_MIN || '0') || 0) * 60000,
-  nightRest: process.env.NIGHT_REST === 'true',
-  debug: process.env.MC_DEBUG === 'true',
-  leash: 22,
-  visitDistance: 14,
+const PORT = process.env.PORT || 5000;
+const rand = (a, b) => a + Math.random() * (b - a);
+
+let botState = {
+  connected: false,
+  mode: 'offline',
+  lastActivity: Date.now(),
+  reconnectAttempts: 0,
+  startTime: Date.now(),
+  errors: [],
 };
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const rand = (a, b) => a + Math.random() * (b - a);
-const key = (v) => String(v);
-const DEG = 180 / Math.PI;
-const dbg = (...a) => { if (CFG.debug) console.log('[dbg]', ...a); };
+let bot = null;
+let activeIntervals = [];
+let reconnectTimeout = null;
+let connectionTimeout = null;
+let isReconnecting = false;
 
+// ============================================================
+// EXPRESS DASHBOARD (keeps Render awake)
+// ============================================================
+const app = express();
+
+const DASH = `<!DOCTYPE html><html><head><title>__NAME__ Status</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#0f172a;color:#f8fafc;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
+.c{background:#1e293b;padding:32px;border-radius:20px;box-shadow:0 0 50px rgba(45,212,191,.2);text-align:center;width:92%;max-width:400px;border:1px solid #334155}
+h1{margin:0 0 24px;font-size:22px;color:#ccfbf1}
+.card{background:#0f172a;padding:14px;margin:12px 0;border-radius:12px;border-left:5px solid #2dd4bf;text-align:left}
+.l{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px}
+.v{font-size:18px;font-weight:bold;color:#2dd4bf;margin-top:5px}
+.dot{height:12px;width:12px;border-radius:50%;display:inline-block;margin-right:8px;background:#ef4444}
+.bar{height:4px;background:#334155;margin-top:18px;border-radius:2px;overflow:hidden}
+.fill{height:100%;width:100%;background:#2dd4bf;animation:ld 2s infinite linear}
+@keyframes ld{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+</style></head><body><div class="c">
+<h1><span id="dot" class="dot"></span>__NAME__</h1>
+<div class="card"><div class="l">Status</div><div class="v" id="st">Connecting...</div></div>
+<div class="card"><div class="l">Activity</div><div class="v" id="mode">-</div></div>
+<div class="card"><div class="l">Uptime</div><div class="v" id="up">0h 0m 0s</div></div>
+<div class="card"><div class="l">Coordinates</div><div class="v" id="co">Waiting...</div></div>
+<div class="card"><div class="l">Server</div><div class="v">__SERVER__</div></div>
+<div class="bar"><div class="fill"></div></div>
+</div>
+<script>
+var f=function(s){return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m '+(s%60)+'s'};
+async function u(){
+  try{
+    var r=await fetch('/health');var d=await r.json();
+    var on=d.status==='connected';
+    document.getElementById('st').innerText=on?'Online & Running':'Reconnecting...';
+    document.getElementById('dot').style.background=on?'#4ade80':'#f87171';
+    document.getElementById('mode').innerText=d.mode||'-';
+    document.getElementById('up').innerText=f(d.uptime);
+    document.getElementById('co').innerText=d.coords?Math.floor(d.coords.x)+', '+Math.floor(d.coords.y)+', '+Math.floor(d.coords.z):'Unknown';
+  }catch(e){document.getElementById('st').innerText='System Offline';}
+}
+setInterval(u,1000);u();
+</script></body></html>`;
+
+app.get('/', (req, res) => {
+  res.send(DASH.replace(/__NAME__/g, config.name).replace(/__SERVER__/g, `${config.server.ip}:${config.server.port}`));
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: botState.connected ? 'connected' : 'disconnected',
+    mode: botState.mode,
+    uptime: Math.floor((Date.now() - botState.startTime) / 1000),
+    coords: bot && bot.entity ? bot.entity.position : null,
+    lastActivity: botState.lastActivity,
+    reconnectAttempts: botState.reconnectAttempts,
+    memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024,
+  });
+});
+
+app.get('/ping', (req, res) => res.send('pong'));
+
+app.listen(PORT, '0.0.0.0', () => console.log(`[Server] HTTP server started on port ${PORT}`));
+
+// Self-ping so Render doesn't sleep
+setInterval(() => {
+  const url = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  const proto = url.startsWith('https') ? https : http;
+  proto.get(`${url}/ping`, () => {}).on('error', (e) => console.log(`[KeepAlive] Self-ping failed: ${e.message}`));
+}, 10 * 60 * 1000);
+
+setInterval(() => {
+  console.log(`[Memory] Heap: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`);
+}, 5 * 60 * 1000);
+
+// ============================================================
+// HELPERS
+// ============================================================
+function formatUptime(seconds) {
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${seconds % 60}s`;
+}
+
+function clearAllIntervals() {
+  activeIntervals.forEach((id) => { clearInterval(id); clearTimeout(id); });
+  activeIntervals = [];
+}
+
+function addInterval(cb, delay) {
+  const id = setInterval(cb, delay);
+  activeIntervals.push(id);
+  return id;
+}
+
+function addTimeout(cb, delay) {
+  const id = setTimeout(cb, delay);
+  activeIntervals.push(id);
+  return id;
+}
+
+function getReconnectDelay() {
+  const base = config.utils['auto-reconnect-delay'] || 2000;
+  const max = config.utils['max-reconnect-delay'] || 15000;
+  return Math.min(base + botState.reconnectAttempts * 1000, max);
+}
+
+function sendDiscordWebhook(content, color = 0x0099ff) {
+  const url = process.env.DISCORD_WEBHOOK || (config.discord && config.discord.webhookUrl);
+  if (!config.discord || !config.discord.enabled || !url || url.includes('YOUR_DISCORD')) return;
+  try {
+    const u = new URL(url);
+    const payload = JSON.stringify({
+      username: config.name,
+      embeds: [{ description: content, color, timestamp: new Date().toISOString() }],
+    });
+    const req = https.request({
+      hostname: u.hostname, port: 443, path: u.pathname + u.search, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, () => {});
+    req.on('error', (e) => console.log(`[Discord] Error: ${e.message}`));
+    req.write(payload);
+    req.end();
+  } catch (e) {
+    console.log(`[Discord] Error: ${e.message}`);
+  }
+}
+
+// ============================================================
+// BOT + RECONNECT
+// ============================================================
+function createBot() {
+  if (isReconnecting) return;
+
+  if (bot) {
+    clearAllIntervals();
+    try { bot.removeAllListeners(); bot.end(); } catch (e) { /* ignore */ }
+    bot = null;
+  }
+
+  console.log(`[Bot] Connecting to ${config.server.ip}:${config.server.port} (v${config.server.version})`);
+
+  try {
+    bot = mineflayer.createBot({
+      username: config['bot-account'].username,
+      password: config['bot-account'].password || undefined,
+      auth: config['bot-account'].type,
+      host: config.server.ip,
+      port: config.server.port,
+      version: config.server.version,
+      hideErrors: false,
+      checkTimeoutInterval: 120000,
+    });
+
+    setupAuth(bot);
+
+    clearTimeout(connectionTimeout);
+    connectionTimeout = setTimeout(() => {
+      if (!botState.connected) {
+        console.log('[Bot] Connection timeout - no spawn received');
+        scheduleReconnect();
+      }
+    }, 60000);
+
+    bot.once('spawn', () => {
+      clearTimeout(connectionTimeout);
+      botState.connected = true;
+      botState.lastActivity = Date.now();
+      botState.reconnectAttempts = 0;
+      isReconnecting = false;
+      console.log('[Bot] [+] Successfully spawned on server!');
+
+      if (config.discord && config.discord.events && config.discord.events.connect) {
+        sendDiscordWebhook(`[+] **Connected** to \`${config.server.ip}\``, 0x4ade80);
+      }
+
+      const mcData = require('minecraft-data')(bot.version);
+      initializeModules(bot, mcData);
+
+      addTimeout(() => {
+        if (bot && botState.connected && config.utils['auto-creative'] !== false) {
+          bot.chat('/gamemode creative');
+          console.log('[INFO] Attempted to set creative mode (requires OP)');
+        }
+      }, 3000);
+    });
+
+    bot.on('end', (reason) => {
+      console.log(`[Bot] Disconnected: ${reason || 'Unknown reason'}`);
+      clearTimeout(connectionTimeout);
+      botState.connected = false;
+      botState.mode = 'offline';
+      clearAllIntervals();
+
+      if (config.discord && config.discord.events && config.discord.events.disconnect && reason !== 'Periodic Rejoin') {
+        sendDiscordWebhook(`[-] **Disconnected**: ${reason || 'Unknown'}`, 0xf87171);
+      }
+      if (config.utils['auto-reconnect']) scheduleReconnect();
+    });
+
+    bot.on('kicked', (reason) => {
+      console.log('[KICK]', typeof reason === 'string' ? reason : JSON.stringify(reason));
+    });
+
+    bot.on('error', (err) => {
+      console.log(`[Bot] Error: ${err.message}`);
+      botState.errors.push({ type: 'error', message: err.message, time: Date.now() });
+    });
+  } catch (err) {
+    console.log(`[Bot] Failed to create bot: ${err.message}`);
+    scheduleReconnect();
+  }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  if (isReconnecting) return;
+
+  isReconnecting = true;
+  botState.reconnectAttempts++;
+  const delay = getReconnectDelay();
+  console.log(`[Bot] Reconnecting in ${delay / 1000}s (attempt #${botState.reconnectAttempts})`);
+
+  reconnectTimeout = setTimeout(() => {
+    isReconnecting = false;
+    createBot();
+  }, delay);
+}
+
+// Single login/register handler (sends once per connection, no duplicates)
+function setupAuth(b) {
+  const auth = (config.utils && config.utils['auto-auth']) || {};
+  if (auth.enabled === false) return;
+  const pw = auth.password || 'Perzuu';
+  let lastAuth = 0;
+
+  b.on('messagestr', (msg) => {
+    const m = String(msg).toLowerCase();
+    if (m.startsWith('<')) return; // normal player chat
+    const now = Date.now();
+    if (now - lastAuth < 20000) return;
+
+    if (m.includes('/register')) {
+      lastAuth = now;
+      b.chat(`/register ${pw} ${pw}`);
+      console.log('[Auth] Register sent');
+    } else if (m.includes('/login')) {
+      lastAuth = now;
+      b.chat(`/login ${pw}`);
+      console.log('[Auth] Login sent');
+    }
+  });
+}
+
+// ============================================================
+// MODULES
+// ============================================================
+function initializeModules(b, mcData) {
+  console.log('[Modules] Initializing...');
+
+  if (config.movement && config.movement.enabled !== false) startWander(b);
+  if (config.modules.combat) combatModule(b, mcData);
+  if (config.modules.beds) bedModule(b);
+  if (config.modules.chat) chatModule(b);
+
+  const pr = config.utils['periodic-rejoin'];
+  if (pr && pr.enabled) {
+    const mins = rand(pr['min-interval'] || 20, pr['max-interval'] || 60);
+    console.log(`[Rejoin] Rejoining in ${mins.toFixed(0)} min`);
+    addTimeout(() => { if (bot) bot.quit('Periodic Rejoin'); }, mins * 60000);
+  }
+
+  console.log('[Modules] All modules initialized!');
+}
+
+// ------------------------------------------------------------
+// WANDER: same behaviour as the Bedrock bot, but with real
+// terrain awareness (mineflayer has physics + block data).
+//  - wanders inside a leash around spawn (or config.position)
+//  - flees hostile mobs it can see
+//  - walks up to ~14 blocks from players who join, then goes back to wandering
+//  - optionally stands still at night
+// ------------------------------------------------------------
 const HOSTILE = new Set([
   'zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider',
   'cave_spider', 'enderman', 'witch', 'pillager', 'vindicator', 'evoker', 'ravager', 'vex', 'phantom',
@@ -36,179 +311,105 @@ const HOSTILE = new Set([
   'silverfish', 'endermite', 'guardian', 'elder_guardian', 'warden', 'breeze',
 ]);
 const RADIUS = { creeper: 9, skeleton: 16, stray: 16, pillager: 18, witch: 12, ghast: 30, blaze: 14, phantom: 18, enderman: 7, warden: 25 };
+const AIR = new Set(['air', 'cave_air', 'void_air']);
+const DANGER = new Set(['lava', 'water', 'fire', 'soul_fire', 'cactus', 'magma_block', 'campfire', 'soul_campfire', 'sweet_berry_bush', 'powder_snow']);
 
-let current = null;
-let stopping = false;
-let backoff = 8000;
+function startWander(b) {
+  const W = (config.movement && config.movement.wander) || {};
+  const leash = W.leash || 22;
+  const visitDistance = W['visit-distance'] || 14;
+  const nightRest = !!W['night-rest'];
 
-function launch() {
-  if (stopping) return;
-  const opts = {
-    host: CFG.host,
-    port: CFG.port,
-    username: CFG.username,
-    offline: CFG.offline,
-    version: CFG.version,
-    connectTimeout: 30000,
-  };
-  if (CFG.xbox) {
-    opts.profilesFolder = CFG.authDir;
-    opts.onMsaCode = (d) => console.log(`\n[auth] Open ${d.verification_uri} and enter code: ${d.user_code}\n`);
-  }
-  const client = bedrock.createClient(opts);
-  current = client;
+  const p0 = b.entity.position;
+  const origin = config.position && config.position.enabled
+    ? { x: config.position.x, z: config.position.z }
+    : { x: p0.x, z: p0.z };
 
   const S = {
-    pos: null, origin: null, rid: null, yaw: rand(0, 360), pitch: 0, tick: 0n,
-    ents: new Map(), visit: [], lastVisit: {}, night: false,
-    mode: 'idle', until: 0, modeStart: 0, heading: 0, nextLook: 0,
-    wasSprint: false, loop: null, beat: null, visitTarget: null,
-    teleported: false, corrections: 0, sent: 0, sendErrors: 0, lastErrLog: 0,
-    sx: 0, sz: 0, sampleT: 0, lastTurn: 0, stuck: 0,
-    beatX: 0, beatZ: 0, holdUntil: 0, started: false,
+    mode: 'idle', until: 0, modeStart: 0,
+    yaw: b.entity.yaw, pitch: 0, heading: b.entity.yaw, nextLook: 0,
+    visit: [], lastVisit: {}, visitTarget: null,
+    sx: p0.x, sz: p0.z, sampleT: 0, lastTurn: 0, hopUntil: 0, nextHop: Date.now() + 8000,
+    beatX: p0.x, beatZ: p0.z,
   };
 
-  const setMode = (m, ms) => { S.mode = m; S.modeStart = Date.now(); S.until = Date.now() + ms; };
+  const setMode = (m, ms) => {
+    S.mode = m; S.modeStart = Date.now(); S.until = Date.now() + ms;
+    botState.mode = m;
+  };
+  setMode('idle', rand(1500, 2500));
 
-  // ---------- packets ----------
-  client.on('start_game', (p) => {
-    S.rid = p.runtime_entity_id;
-    S.pos = { ...p.player_position };
-    S.origin = { ...p.player_position };
-    try { if (p.current_tick !== undefined) S.tick = BigInt(p.current_tick); } catch (e) { /* ignore */ }
-    dbg('start_game pos', S.pos, 'movement', JSON.stringify(p.player_movement_settings || p.movement_authority));
-  });
+  const norm = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+  const yawTo = (tx, tz) => {
+    const p = b.entity.position;
+    return Math.atan2(-(tx - p.x), -(tz - p.z));
+  };
 
-  client.on('add_entity', (p) => {
-    S.ents.set(key(p.runtime_id), { name: String(p.entity_type).replace('minecraft:', ''), pos: { ...p.position } });
-  });
-  client.on('add_player', (p) => {
-    S.ents.set(key(p.runtime_id), { name: 'player', username: p.username, pos: { ...p.position } });
-  });
-  client.on('remove_entity', (p) => S.ents.delete(key(p.entity_id_self)));
-  client.on('move_entity', (p) => {
-    const e = S.ents.get(key(p.runtime_entity_id));
-    if (e && p.position) e.pos = { ...p.position };
-  });
-  client.on('move_entity_delta', (p) => {
-    const e = S.ents.get(key(p.runtime_entity_id));
-    if (!e) return;
-    if (typeof p.x === 'number') e.pos.x = p.x;
-    if (typeof p.y === 'number') e.pos.y = p.y;
-    if (typeof p.z === 'number') e.pos.z = p.z;
-  });
-  client.on('move_player', (p) => {
-    if (key(p.runtime_id) === key(S.rid)) {
-      S.pos = { ...p.position };
-      S.corrections++;
-      if (p.mode === 'teleport') { S.teleported = true; S.holdUntil = Date.now() + 700; } // stand still so the server can confirm the teleport
-      dbg('server move_player', p.mode, S.pos);
-    } else {
-      const e = S.ents.get(key(p.runtime_id));
-      if (e && p.position) e.pos = { ...p.position };
+  const isAir = (blk) => !!blk && AIR.has(blk.name);
+  const isDanger = (blk) => !!blk && DANGER.has(blk.name);
+
+  // true if walking in this direction leads into lava/water/fire or a 3+ block drop
+  function unsafeAhead(yaw) {
+    const p = b.entity.position;
+    for (const d of [1.0, 2.0]) {
+      const f = p.offset(-Math.sin(yaw) * d, 0, -Math.cos(yaw) * d).floored();
+      const b0 = b.blockAt(f);
+      const b1 = b.blockAt(f.offset(0, -1, 0));
+      const b2 = b.blockAt(f.offset(0, -2, 0));
+      const b3 = b.blockAt(f.offset(0, -3, 0));
+      if (isDanger(b0) || isDanger(b1)) return true;
+      if (isAir(b1) && isAir(b2) && isAir(b3)) return true;
     }
-  });
-  client.on('correct_player_move_prediction', (p) => {
-    if (p.position) { S.pos = { ...p.position }; S.corrections++; dbg('server correction', S.pos); }
-  });
-
-  client.on('player_list', (p) => {
-    try {
-      if (!p.records || p.records.type !== 'add') return;
-      for (const r of p.records.records) {
-        if (!r.username || r.username === CFG.username) continue;
-        if (client.profile && r.username === client.profile.name) continue;
-        const last = S.lastVisit[r.username] || 0;
-        if (Date.now() - last < 10 * 60 * 1000) continue;
-        S.lastVisit[r.username] = Date.now();
-        S.visit.push({ name: r.username, at: Date.now() + rand(4000, 9000), tries: 0 });
-      }
-    } catch (e) { /* ignore */ }
-  });
-
-  client.on('set_time', (p) => {
-    const t = ((Number(p.time) % 24000) + 24000) % 24000;
-    S.night = t >= 13000 && t < 23000;
-  });
-
-  client.on('respawn', (p) => {
-    try {
-      if (p.state === 'searching' || p.state === 'server_searching') {
-        client.queue('respawn', { position: p.position, state: 'client_ready', runtime_entity_id: S.rid });
-      }
-    } catch (e) { /* ignore */ }
-  });
-
-  function startLoop(why) {
-    if (S.started || !S.pos) return;
-    S.started = true;
-    console.log(`[bot] movement loop started (${why}) as ${CFG.username}`);
-    backoff = 8000;
-    if (S.loop) clearInterval(S.loop);
-    if (S.beat) clearInterval(S.beat);
-    setMode('idle', rand(1500, 2500));
-    S.loop = setInterval(step, 50);
-    S.beatX = S.pos.x;
-    S.beatZ = S.pos.z;
-    S.beat = setInterval(heartbeat, 5000);
+    return false;
   }
 
-  client.on('spawn', () => startLoop('spawn event'));
-  client.on('play_status', (p) => {
-    console.log('[bot] play_status:', p && p.status);
-    if (p && p.status === 'player_spawn') setTimeout(() => startLoop('player_spawn'), 1500);
-  });
-  client.on('join', () => console.log('[bot] joined (login ok)'));
-  client.on('disconnect', (p) => console.log('[bot] server disconnect:', p && (p.message || JSON.stringify(p))));
-  client.on('transfer', (p) => console.log('[bot] server wants transfer:', JSON.stringify(p)));
-  client.on('text', (p) => { if (p && p.message) console.log('[chat]', p.source_name || '', String(p.message).slice(0, 200)); });
-  client.on('start_game', () => {
-    // fallback: if no spawn event arrives, start anyway
-    setTimeout(() => { if (!S.started) startLoop('fallback timer'); }, 12000);
-  });
-
-  // ---------- diagnostics ----------
-  function heartbeat() {
-    if (!S.pos) return;
-    const moved = Math.hypot(S.pos.x - S.beatX, S.pos.z - S.beatZ);
-    S.beatX = S.pos.x; S.beatZ = S.pos.z;
-    console.log(
-      `[bot] mode=${S.mode} pos=(${S.pos.x.toFixed(1)}, ${S.pos.y.toFixed(1)}, ${S.pos.z.toFixed(1)}) ` +
-      `moved5s=${moved.toFixed(1)} sent=${S.sent} corrections=${S.corrections} stuckTurns=${S.stuck} sendErrors=${S.sendErrors}`
-    );
-    if (moved < 0.5 && S.mode === 'walk') {
-      console.log('[bot] WARNING: walking but not moving. Server is rubber-banding us, or a login/auth plugin is freezing the player.');
+  function pickSafeHeading(base) {
+    for (const off of [0, 0.8, -0.8, 1.6, -1.6, 2.4, -2.4, Math.PI]) {
+      if (!unsafeAhead(base + off)) return base + off;
     }
+    return null;
   }
 
-  // ---------- brain + movement (20 ticks/s) ----------
   function nearestThreat() {
+    const me = b.entity.position;
     let best = null;
     let bd = 1e9;
-    for (const e of S.ents.values()) {
-      if (!HOSTILE.has(e.name)) continue;
-      const dx = e.pos.x - S.pos.x;
-      const dz = e.pos.z - S.pos.z;
-      const d = Math.hypot(dx, dz);
-      if (Math.abs(e.pos.y - S.pos.y) > 10) continue;
+    for (const e of Object.values(b.entities)) {
+      if (!e || e === b.entity || !e.position || !HOSTILE.has(e.name)) continue;
+      if (Math.abs(e.position.y - me.y) > 10) continue;
+      const d = Math.hypot(e.position.x - me.x, e.position.z - me.z);
       if (d < (RADIUS[e.name] || 10) && d < bd) { best = e; bd = d; }
     }
     return best;
   }
 
-  const headingTo = (tx, tz) => Math.atan2(-(tx - S.pos.x), tz - S.pos.z) * DEG;
-  const norm = (a) => ((a % 360 + 540) % 360) - 180;
-
   function pickWalkHeading() {
-    const dx = S.origin.x - S.pos.x;
-    const dz = S.origin.z - S.pos.z;
-    if (Math.hypot(dx, dz) > CFG.leash) return headingTo(S.origin.x, S.origin.z) + rand(-25, 25);
-    return rand(-180, 180);
+    const p = b.entity.position;
+    if (Math.hypot(origin.x - p.x, origin.z - p.z) > leash) {
+      return yawTo(origin.x, origin.z) + rand(-0.45, 0.45);
+    }
+    return rand(-Math.PI, Math.PI);
+  }
+
+  b.on('playerJoined', (pl) => {
+    if (!pl || !pl.username || pl.username === b.username) return;
+    if (Date.now() - (S.lastVisit[pl.username] || 0) < 10 * 60 * 1000) return;
+    S.lastVisit[pl.username] = Date.now();
+    S.visit.push({ name: pl.username, at: Date.now() + rand(4000, 9000), tries: 0 });
+  });
+
+  function stopControls() {
+    b.setControlState('forward', false);
+    b.setControlState('sprint', false);
+    b.setControlState('jump', false);
   }
 
   function step() {
-    if (!S.pos) return;
+    if (!botState.connected || !b.entity) return;
+    if (b.isSleeping) { stopControls(); return; }
+
     const now = Date.now();
+    const p = b.entity.position;
     let moving = false;
     let sprint = false;
 
@@ -216,19 +417,20 @@ function launch() {
     if (threat) {
       if (S.mode !== 'flee') setMode('flee', 3000);
       S.until = now + 3000;
-      S.heading = headingTo(threat.pos.x, threat.pos.z) + 180 + rand(-15, 15);
+      S.heading = yawTo(threat.position.x, threat.position.z) + Math.PI + rand(-0.25, 0.25);
       moving = true;
       sprint = true;
     } else if (S.mode === 'flee') {
       setMode('idle', rand(1000, 2000));
     } else if (S.mode === 'idle') {
       if (now > S.until) {
+        const isNight = b.time && b.time.timeOfDay >= 13000 && b.time.timeOfDay < 23000;
+        const resting = nightRest && isNight;
         const v = S.visit.find((x) => now >= x.at);
-        const resting = CFG.nightRest && S.night;
         if (v && !resting) {
           S.visit.splice(S.visit.indexOf(v), 1);
-          const target = [...S.ents.values()].find((e) => e.name === 'player' && e.username === v.name);
-          if (target) { S.visitTarget = target; setMode('visit', 25000); }
+          const pl = b.players[v.name];
+          if (pl && pl.entity) { S.visitTarget = v.name; setMode('visit', 25000); }
           else if (v.tries < 3) S.visit.push({ name: v.name, at: now + 6000, tries: v.tries + 1 });
         } else if (resting) {
           S.until = now + rand(4000, 9000);
@@ -241,124 +443,172 @@ function launch() {
       moving = true;
       if (now > S.until) setMode('idle', rand(800, 2500));
     } else if (S.mode === 'visit') {
-      const t = S.visitTarget;
+      const pl = S.visitTarget && b.players[S.visitTarget];
+      const t = pl && pl.entity;
       if (!t || now > S.until) { S.visitTarget = null; setMode('idle', rand(2000, 5000)); }
       else {
-        const d = Math.hypot(t.pos.x - S.pos.x, t.pos.z - S.pos.z);
-        if (d > CFG.visitDistance) { S.heading = headingTo(t.pos.x, t.pos.z); moving = true; }
-        else if (d < 9) { S.heading = headingTo(t.pos.x, t.pos.z) + 180; moving = true; }
+        const d = Math.hypot(t.position.x - p.x, t.position.z - p.z);
+        if (d > visitDistance) { S.heading = yawTo(t.position.x, t.position.z); moving = true; }
+        else if (d < 9) { S.heading = yawTo(t.position.x, t.position.z) + Math.PI; moving = true; }
         else { S.visitTarget = null; setMode('idle', rand(3000, 8000)); }
       }
     }
 
-    // look drift only while truly idle
+    // pick a safe direction (no lava, water, fire or big drops)
+    if (moving) {
+      const safe = pickSafeHeading(S.heading);
+      if (safe === null) {
+        moving = false;
+        if (S.mode === 'walk') setMode('idle', rand(500, 1500));
+      } else {
+        S.heading = safe;
+      }
+    }
+
+    // human-like look drift while idle
     if (!moving && S.mode === 'idle' && now > S.nextLook) {
-      S.heading = S.yaw + rand(-80, 80);
-      S.pitch = rand(-18, 18);
+      S.heading = S.yaw + rand(-1.4, 1.4);
+      S.pitch = rand(-0.3, 0.3);
       S.nextLook = now + rand(1200, 4000);
     }
 
-    // smooth turning
+    // smooth turning (turn first, then walk)
     const diff = norm(S.heading - S.yaw);
-    S.yaw = norm(S.yaw + Math.max(-12, Math.min(12, diff)));
-    if (moving && Math.abs(diff) > 70) moving = false; // turn first, then walk
+    S.yaw = norm(S.yaw + Math.max(-0.2, Math.min(0.2, diff)));
+    if (moving && Math.abs(diff) > 1.2) moving = false;
+    if (moving && unsafeAhead(S.yaw)) moving = false;
 
-    // stuck detection based on REAL progress (our position is snapped back when the server pushes us)
+    // stuck detection based on real progress
     if (!moving) {
-      S.sampleT = now; S.sx = S.pos.x; S.sz = S.pos.z;
-    } else if (now - S.sampleT > 1000) {
-      const progress = Math.hypot(S.pos.x - S.sx, S.pos.z - S.sz);
-      S.sampleT = now; S.sx = S.pos.x; S.sz = S.pos.z;
-      if (progress < 1.2 && now - S.lastTurn > 1000) {
-        S.heading += rand(100, 220); // blocked -> turn away
+      S.sampleT = now; S.sx = p.x; S.sz = p.z;
+    } else if (now - S.sampleT > 1200) {
+      const progress = Math.hypot(p.x - S.sx, p.z - S.sz);
+      S.sampleT = now; S.sx = p.x; S.sz = p.z;
+      if (progress < 0.8 && now - S.lastTurn > 1200) {
+        S.heading += rand(2.0, 4.0); // blocked -> turn away
         S.lastTurn = now;
-        S.stuck++;
-        dbg('stuck, turning. progress', progress.toFixed(2));
       }
     }
 
-    if (now < S.holdUntil) moving = false;
-    sendInput(moving, sprint);
+    // occasional hop while idle (anti-AFK)
+    if (!moving && now > S.nextHop) {
+      S.hopUntil = now + 150;
+      S.nextHop = now + rand(8000, 15000);
+    }
+
+    b.look(S.yaw, S.pitch, true);
+    b.setControlState('forward', moving);
+    b.setControlState('sprint', moving && sprint);
+    const jump = (moving && b.entity.isCollidedHorizontally) || b.entity.isInWater || now < S.hopUntil;
+    b.setControlState('jump', !!jump);
+    botState.lastActivity = now;
   }
 
-  function sendInput(moving, sprint) {
-    const rad = S.yaw / DEG;
-    const sp = moving ? (sprint ? 0.28 : 0.2158) : 0;
-    const dx = -Math.sin(rad) * sp;
-    const dz = Math.cos(rad) * sp;
-    S.pos.x += dx;
-    S.pos.z += dz;
-    S.tick += 1n;
+  addInterval(() => {
+    try { step(); } catch (e) { console.log('[Wander] Error:', e.message); }
+  }, 50);
 
-    const flags = {
-      up: moving,
-      sprint_down: moving && sprint,
-      sprinting: moving && sprint,
-      start_sprinting: moving && sprint && !S.wasSprint,
-      stop_sprinting: S.wasSprint && !(moving && sprint),
-      handled_teleport: S.teleported,
-      block_breaking_delay_enabled: true,
-    };
-    S.teleported = false;
-    S.wasSprint = moving && sprint;
-    const mv = { x: 0, z: moving ? 1 : 0 };
+  addInterval(() => {
+    if (!b.entity) return;
+    const p = b.entity.position;
+    const moved = Math.hypot(p.x - S.beatX, p.z - S.beatZ);
+    S.beatX = p.x; S.beatZ = p.z;
+    console.log(`[Wander] mode=${S.mode} pos=(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) moved30s=${moved.toFixed(1)}`);
+  }, 30000);
+}
 
-    // Superset of fields across protocol versions (unknown extra fields are ignored by the serializer,
-    // but a MISSING required field throws).
-    const packet = {
-      pitch: S.pitch,
-      yaw: S.yaw,
-      position: { x: S.pos.x, y: S.pos.y, z: S.pos.z },
-      move_vector: mv,
-      head_yaw: S.yaw,
-      input_data: flags,
-      input_mode: 'mouse',
-      play_mode: 'normal',
-      interaction_model: 'classic',
-      interact_rotation: { x: S.pitch, z: S.yaw },
-      gaze_direction: { x: 0, y: 0, z: 0 },
-      tick: S.tick,
-      delta: { x: dx, y: 0, z: dz },
-      client_predicted_velocity: { x: dx, y: 0, z: dz },
-      analogue_move_vector: mv,
-      raw_move_vector: mv,
-      camera_orientation: { x: 0, y: 0, z: 0 },
-    };
+// ------------------------------------------------------------
+function combatModule(b, mcData) {
+  if (config.combat && config.combat['attack-mobs']) {
+    addInterval(() => {
+      if (!botState.connected) return;
+      try {
+        const mob = Object.values(b.entities).find((e) =>
+          e && e.type === 'hostile' && e.position && b.entity.position.distanceTo(e.position) < 4);
+        if (mob) b.attack(mob);
+      } catch (e) { console.log('[Combat] Error:', e.message); }
+    }, 1500);
+  }
+
+  let eating = false;
+  b.on('health', async () => {
+    if (!config.combat || !config.combat['auto-eat'] || eating || b.food >= 14) return;
+    const food = b.inventory.items().find((i) => mcData.itemsByName[i.name] && mcData.itemsByName[i.name].foodPoints);
+    if (!food) return;
+    eating = true;
     try {
-      client.queue('player_auth_input', packet);
-      S.sent++;
+      await b.equip(food, 'hand');
+      await b.consume();
     } catch (e) {
-      S.sendErrors++;
-      const now = Date.now();
-      if (now - S.lastErrLog > 5000) {
-        S.lastErrLog = now;
-        console.log('[bot] player_auth_input FAILED to serialize (set MC_VERSION to your exact server version):', e && e.message);
-      }
+      console.log('[AutoEat] Error:', e.message);
     }
-  }
-
-  // ---------- lifecycle ----------
-  client.on('kick', (p) => console.log('[bot] kicked:', p && (p.message || JSON.stringify(p))));
-  client.on('error', (e) => console.log('[bot] error:', e && e.message));
-  client.on('close', () => {
-    clearInterval(S.loop);
-    clearInterval(S.beat);
-    console.log('[bot] disconnected');
-    if (stopping) return;
-    const wait = backoff * rand(0.8, 1.3);
-    backoff = Math.min(backoff * 1.7, 120000);
-    console.log(`[bot] reconnecting in ${Math.round(wait / 1000)}s`);
-    setTimeout(launch, wait);
+    eating = false;
   });
 }
 
-function shutdown() {
-  stopping = true;
-  try { if (current) current.disconnect(); } catch (e) { /* ignore */ }
-  setTimeout(() => process.exit(0), 1500);
+function bedModule(b) {
+  addInterval(async () => {
+    if (!botState.connected || b.isSleeping) return;
+    try {
+      const t = b.time.timeOfDay;
+      const isNight = t >= 12500 && t <= 23500;
+      if (!(config.beds && config.beds['place-night']) || !isNight) return;
+      const bed = b.findBlock({ matching: (blk) => blk.name.includes('bed'), maxDistance: 8 });
+      if (bed) {
+        await b.sleep(bed);
+        console.log('[Bed] Sleeping...');
+      }
+    } catch (e) { /* cannot sleep right now */ }
+  }, 10000);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-if (CFG.maxRuntimeMs > 0) setTimeout(shutdown, CFG.maxRuntimeMs);
 
-launch();
+function chatModule(b) {
+  let lastGreet = 0;
+  b.on('chat', (username, message) => {
+    if (username === b.username || !(config.chat && config.chat.respond)) return;
+    if (/\b(hello|hi|hey)\b/i.test(message) && Date.now() - lastGreet > 15000) {
+      lastGreet = Date.now();
+      b.chat(`Hello, ${username}!`);
+    }
+  });
+}
+
+// ============================================================
+// CONSOLE COMMANDS
+// ============================================================
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+rl.on('line', (line) => {
+  if (!bot || !botState.connected) return console.log('[Console] Bot not connected');
+  const t = line.trim();
+  if (t.startsWith('say ')) bot.chat(t.slice(4));
+  else if (t.startsWith('cmd ')) bot.chat('/' + t.slice(4));
+  else if (t === 'status') console.log(`Connected: ${botState.connected}, Mode: ${botState.mode}, Uptime: ${formatUptime(Math.floor((Date.now() - botState.startTime) / 1000))}`);
+  else if (t === 'reconnect') bot.end();
+  else bot.chat(t);
+});
+
+// ============================================================
+// CRASH RECOVERY
+// ============================================================
+process.on('uncaughtException', (err) => {
+  console.log(`[FATAL] Uncaught Exception: ${err.message}`);
+  botState.errors.push({ type: 'uncaught', message: err.message, time: Date.now() });
+  if (config.utils['auto-reconnect']) {
+    clearAllIntervals();
+    setTimeout(scheduleReconnect, 1000);
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  console.log(`[FATAL] Unhandled Rejection: ${reason}`);
+  botState.errors.push({ type: 'rejection', message: String(reason), time: Date.now() });
+});
+process.on('SIGTERM', () => process.exit(0));
+process.on('SIGINT', () => process.exit(0));
+
+// ============================================================
+console.log('='.repeat(50));
+console.log('  Minecraft AFK Bot v3 - wander / flee / visit');
+console.log('='.repeat(50));
+console.log(`Server: ${config.server.ip}:${config.server.port}  Version: ${config.server.version}`);
+
+createBot();
