@@ -1,0 +1,67 @@
+{
+  "name": "AFK Bot",
+  "bot-account": {
+    "username": "MarkGaming843",
+    "password": "",
+    "type": "offline"
+  },
+  "server": {
+    "ip": "15.235.165.81",
+    "port": 26162,
+    "version": "1.21.1"
+  },
+  "position": {
+    "enabled": false,
+    "x": 0,
+    "y": 100,
+    "z": 0
+  },
+  "utils": {
+    "auto-auth": {
+      "enabled": true,
+      "password": "Perzuu"
+    },
+    "auto-creative": true,
+    "auto-reconnect": true,
+    "auto-reconnect-delay": 2000,
+    "max-reconnect-delay": 20000,
+    "periodic-rejoin": {
+      "enabled": false,
+      "min-interval": 20,
+      "max-interval": 60
+    }
+  },
+  "movement": {
+    "enabled": true,
+    "wander": {
+      "enabled": true,
+      "leash": 22,
+      "visit-distance": 14,
+      "night-rest": false
+    }
+  },
+  "modules": {
+    "combat": true,
+    "beds": true,
+    "chat": true
+  },
+  "combat": {
+    "attack-mobs": false,
+    "auto-eat": true
+  },
+  "beds": {
+    "place-night": true
+  },
+  "discord": {
+    "enabled": true,
+    "webhookUrl": "YOUR_DISCORD_WEBHOOK_URL",
+    "events": {
+      "connect": true,
+      "disconnect": true,
+      "chat": false
+    }
+  },
+  "chat": {
+    "respond": true
+  }
+}
