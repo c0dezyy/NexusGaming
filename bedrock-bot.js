@@ -197,7 +197,7 @@ function createBot() {
         sendDiscordWebhook(`[+] **Connected** to \`${config.server.ip}\``, 0x4ade80);
       }
 
-      const mcData = require('minecraft-data')(bot.version);
+      const mcData = bot.registry;
       initializeModules(bot, mcData);
 
       addTimeout(() => {
