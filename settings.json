@@ -1,14 +1,29 @@
 {
-  "name": "AFK Bot",
-  "bot-account": {
-    "username": "MarkGaming843",
-    "password": "",
-    "type": "offline"
-  },
+  "name": "Kodeshi Players",
   "server": {
     "ip": "15.235.165.81",
     "port": 26162,
     "version": ""
+  },
+  "roster": {
+    "randomize-names": false,
+    "name-pool": [],
+    "players": [
+      { "name": "MarkGaming843", "enabled": true, "stay": true },
+      { "name": "NexusGaming019", "enabled": true, "stay": true },
+      { "name": "NeoRofusSs", "enabled": true, "stay": true },
+      { "name": "Maltosefrud", "enabled": true, "stay": false },
+      { "name": "NidoSquishy466", "enabled": true, "stay": false },
+      { "name": "NathanIsFree", "enabled": true, "stay": false },
+      { "name": "Mesotopia887", "enabled": true, "stay": false }
+    ]
+  },
+  "schedule": {
+    "enabled": true,
+    "min-online": 3,
+    "stagger-seconds": { "min": 8, "max": 20 },
+    "session-minutes": { "min": 60, "max": 360 },
+    "rejoin-minutes": { "min": 10, "max": 20 }
   },
   "position": {
     "enabled": false,
@@ -20,18 +35,22 @@
     "auto-auth": {
       "enabled": true,
       "password": "Perzuu",
-      "proactive-login": true
+      "proactive-login": false
+    },
+    "pin-auth": {
+      "enabled": true,
+      "pin": "",
+      "window-title-contains": "Kodeshi",
+      "slots": {},
+      "confirm-slot": null,
+      "click-delay-ms": 450,
+      "first-delay-ms": 800
     },
     "auto-creative": false,
     "chat-log": true,
     "auto-reconnect": true,
     "auto-reconnect-delay": 2000,
-    "max-reconnect-delay": 20000,
-    "periodic-rejoin": {
-      "enabled": false,
-      "min-interval": 20,
-      "max-interval": 60
-    }
+    "max-reconnect-delay": 60000
   },
   "movement": {
     "enabled": true,
@@ -45,7 +64,7 @@
   },
   "hunt": {
     "enabled": true,
-    "always": true,
+    "always": false,
     "range": 24,
     "animals": ["cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"]
   },
@@ -71,11 +90,10 @@
     "webhookUrl": "YOUR_DISCORD_WEBHOOK_URL",
     "events": {
       "connect": true,
-      "disconnect": true,
-      "chat": false
+      "disconnect": true
     }
   },
   "chat": {
-    "respond": true
+    "respond": false
   }
 }
