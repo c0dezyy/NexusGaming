@@ -1,12 +1,12 @@
 {
-  "name": "nexusgaming019-bedrock-bot",
+  "name": "nexusgaming",
   "version": "1.0.0",
-  "private": true,
   "main": "bedrock-bot.js",
   "scripts": {
     "start": "node bedrock-bot.js"
   },
   "dependencies": {
-    "bedrock-protocol": "^3.40.0"
+    "express": "^4.19.2",
+    "mineflayer": "^4.30.0"
   }
 }
