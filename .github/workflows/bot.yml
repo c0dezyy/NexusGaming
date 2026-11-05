@@ -1,17 +1,19 @@
-name: Minecraft Bedrock Bot
+name: run
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 */6 * * *' # fallback restart if the chain ever breaks
+    # backup start in case the self-restart chain ever breaks
+    - cron: '*/30 * * * *'
 
+# only one run at a time; a newer pending run replaces an older pending one
 concurrency:
-  group: mc-bot
+  group: afk-players
   cancel-in-progress: false
 
 permissions:
-  actions: write
   contents: read
+  actions: write   # lets the last step start the next run
 
 jobs:
   run:
@@ -19,41 +21,23 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
-      # keeps the Xbox login between runs so you only sign in once
-      - name: Restore Xbox login cache
-        uses: actions/cache/restore@v4
-        with:
-          path: auth
-          key: mc-auth-${{ github.run_id }}
-          restore-keys: mc-auth-
-
-      - run: npm install --no-audit --no-fund
+      - name: Install
+        run: npm install --no-audit --no-fund
 
       - name: Run bot
         env:
-          MC_HOST: ${{ secrets.MC_HOST }}
-          MC_PORT: ${{ secrets.MC_PORT }}
-          MC_VERSION: ${{ vars.MC_VERSION }}
-          MC_AUTH: xbox # change to "cracked" to join without an Xbox account
-          MC_USERNAME: ${{ secrets.MC_USERNAME }} # any label, only names the token cache
-          AUTH_DIR: auth
-          MAX_RUNTIME_MIN: 340
+          MAX_RUNTIME_MIN: '340'
+          BOT_PIN: ${{ secrets.BOT_PIN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: node bedrock-bot.js
-
-      - name: Save Xbox login cache
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: auth
-          key: mc-auth-${{ github.run_id }}
 
       - name: Start next run
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run bot.yml
+        run: gh workflow run "${{ github.workflow }}" --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
