@@ -6,16 +6,16 @@
     "version": "1.21.1"
   },
   "roster": {
-    "randomize-names": false,
+    "randomize-names": true,
     "name-pool": [],
     "players": [
       { "name": "MarkGaming843", "enabled": true, "stay": true },
       { "name": "NexusGaming019", "enabled": true, "stay": true },
       { "name": "PandoraFer789", "enabled": true, "stay": true },
-      { "name": "Player4", "enabled": true, "stay": false },
-      { "name": "Player5", "enabled": true, "stay": false },
-      { "name": "Player6", "enabled": true, "stay": false },
-      { "name": "Player7", "enabled": true, "stay": false }
+      { "name": "NidoSquishy07", "enabled": true, "stay": false },
+      { "name": "Ferrdus9", "enabled": true, "stay": false },
+      { "name": "VinceForU31", "enabled": true, "stay": false },
+      { "name": "Mell3in", "enabled": true, "stay": false }
     ]
   },
   "schedule": {
