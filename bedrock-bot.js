@@ -176,6 +176,7 @@ class Slot {
     this.diag = null;
     this.pinBusy = false;
     this.pinRuns = 0;
+    this.pinNext = null;
     this.nextJoinAt = 0;
   }
 
@@ -202,6 +203,7 @@ class Slot {
     this.leaving = false;
     this.pinBusy = false;
     this.pinRuns = 0;
+    this.pinNext = null;
     this.lastKick = '';
     const t0 = Date.now();
     this.log(`connecting to ${config.server.ip}:${config.server.port} (version ${useVersion() || 'auto'})`);
@@ -385,12 +387,32 @@ function labelOf(item) {
 function findDigitSlot(win, d) {
   const end = win.inventoryStart || win.slots.length;
   const re = new RegExp(`(^|[^0-9])${d}([^0-9]|$)`);
+  // 1) item name contains exactly this digit
   for (let i = 0; i < end; i++) {
     const lab = labelOf(win.slots[i]);
     if (!lab) continue;
     if (lab === d || (re.test(lab) && (lab.match(/\d/g) || []).length === 1)) return i;
   }
+  // 2) digit shown as stack size on items without a number in the name
+  if (d !== '0') {
+    const hits = [];
+    for (let i = 0; i < end; i++) {
+      const it = win.slots[i];
+      if (it && it.count === Number(d) && !/\d/.test(labelOf(it))) hits.push(i);
+    }
+    if (hits.length === 1) return hits[0];
+  }
   return undefined;
+}
+
+function dumpWindow(slot, win, why) {
+  const end = win.inventoryStart || win.slots.length;
+  const items = [];
+  for (let i = 0; i < end; i++) {
+    const it = win.slots[i];
+    if (it) items.push(`${i}:"${labelOf(it) || it.name}"${it.count > 1 ? 'x' + it.count : ''}`);
+  }
+  slot.log(`[PIN] ${why} | title=${JSON.stringify(win.title)} | ${end} slots | items: ${items.join(' ').slice(0, 1800) || '(none)'}`);
 }
 
 async function clickSlot(b, idx) {
@@ -398,13 +420,10 @@ async function clickSlot(b, idx) {
 }
 
 function setupPin(slot, b) {
-  const P = config.utils && config.utils['pin-auth'];
-  if (!P || P.enabled === false) return;
+  const P = (config.utils && config.utils['pin-auth']) || {};
+  if (P.enabled === false) return;
   const pin = String(process.env.BOT_PIN || P.pin || '');
-  if (!/^\d{4,12}$/.test(pin)) {
-    if (!global.__pinWarned) { global.__pinWarned = true; slot.log('[PIN] no PIN set (utils.pin-auth.pin or BOT_PIN secret) - keypad login is skipped'); }
-    return;
-  }
+  const havePin = /^\d{4,12}$/.test(pin);
   const needle = String(P['window-title-contains'] === undefined ? 'Kodeshi' : P['window-title-contains']).toLowerCase();
   const manual = P.slots || {};
   const delay = P['click-delay-ms'] || 450;
@@ -412,17 +431,23 @@ function setupPin(slot, b) {
   async function run(win) {
     slot.pinBusy = true;
     try {
-      slot.log(`[PIN] keypad opened (${win.slots.length} slots) - entering PIN`);
-      await sleep(P['first-delay-ms'] || 800);
+      await sleep(P['first-delay-ms'] || 1000); // items arrive just after the window opens
+      if (b.currentWindow !== win) return;
+      if (!global.__winDumped) { global.__winDumped = true; dumpWindow(slot, win, 'keypad window opened'); }
+      if (!havePin) {
+        if (!global.__pinWarned) {
+          global.__pinWarned = true;
+          slot.log('[PIN] a keypad is open but NO PIN is set - bots cannot log in or move. Set the BOT_PIN secret (or utils.pin-auth.pin).');
+        }
+        return;
+      }
+      slot.log('[PIN] entering PIN');
       for (const d of pin) {
-        if (b.currentWindow !== win) { slot.log('[PIN] window changed - stopping this attempt'); return; }
+        if (b.currentWindow !== win) { slot.log('[PIN] window changed - continuing with the new one'); return; }
         let idx = manual[d];
         if (idx === undefined) idx = findDigitSlot(win, d);
         if (idx === undefined || idx === null) {
-          const labels = [];
-          const end = win.inventoryStart || win.slots.length;
-          for (let i = 0; i < end; i++) { const l = labelOf(win.slots[i]); if (l) labels.push(`${i}:"${l}"`); }
-          slot.log(`[PIN] cannot find digit ${d}. Items: ${labels.join(' ') || '(none)'} - set utils.pin-auth.slots`);
+          dumpWindow(slot, win, `cannot find digit ${d} - fill utils.pin-auth.slots`);
           return;
         }
         await clickSlot(b, idx);
@@ -436,6 +461,11 @@ function setupPin(slot, b) {
       slot.log('[PIN] error:', e.message);
     } finally {
       slot.pinBusy = false;
+      if (slot.pinNext) { // a confirm / next keypad opened while we were clicking
+        const w = slot.pinNext;
+        slot.pinNext = null;
+        if (b.currentWindow === w && ++slot.pinRuns <= 8) run(w);
+      }
     }
   }
 
@@ -443,10 +473,13 @@ function setupPin(slot, b) {
     try {
       const title = (typeof win.title === 'string' ? win.title : JSON.stringify(win.title || '')).toLowerCase();
       if (needle && !title.includes(needle)) return;
-      if (slot.pinBusy || ++slot.pinRuns > 8) return;
+      if (slot.pinBusy) { slot.pinNext = win; return; }
+      if (++slot.pinRuns > 8) return;
       run(win);
     } catch (e) { slot.log('[PIN] error:', e.message); }
   });
+
+  b.on('windowClose', () => slot.log('[PIN] window closed'));
 }
 
 // ============================================================
@@ -544,7 +577,7 @@ function startBrain(slot, b) {
 
   const now0 = Date.now();
   const S = {
-    t0: now0, ready: false, lastWait: 0, lastBadPos: 0,
+    still: '', t0: now0, ready: false, lastWait: 0, lastBadPos: 0,
     mode: 'idle', until: 0, modeStart: 0,
     yaw: fin(b.entity.yaw, 0), pitch: 0, heading: fin(b.entity.yaw, 0), nextLook: 0,
     visit: [], lastVisit: {}, visitTarget: null,
@@ -868,7 +901,7 @@ function startBrain(slot, b) {
     }
 
     // a GUI (PIN keypad) is open: a real player cannot walk now either
-    if (b.currentWindow || slot.pinBusy) { stopControls(); return; }
+    if (b.currentWindow || slot.pinBusy) { stopControls(); S.still = 'a GUI is open (PIN keypad?)'; return; }
 
     // never send NaN rotations (the server kicks with "invalid player movement")
     if (!Number.isFinite(S.yaw)) S.yaw = 0;
@@ -878,6 +911,7 @@ function startBrain(slot, b) {
     // wait until the chunk under us is loaded
     if (!b.blockAt(p.offset(0, -0.5, 0))) {
       stopControls();
+      S.still = 'waiting for world chunks';
       if (!S.ready && now - S.lastWait > 5000) {
         S.lastWait = now;
         log(`[Brain] waiting for world chunks... (${Math.round((now - S.t0) / 1000)}s)`);
@@ -890,7 +924,7 @@ function startBrain(slot, b) {
       setMode('idle', 300);
     }
 
-    if (S.eating) { stopControls(); return; }
+    if (S.eating) { stopControls(); S.still = 'eating'; return; }
 
     T.dark = darkAt(p);
     T.deep = p.y < origin.y - maxDescent;
@@ -976,6 +1010,7 @@ function startBrain(slot, b) {
       const safe = pickSafeHeading(S.heading);
       if (safe === null) {
         moving = false;
+        S.still = 'no safe direction';
         if (now - S.lastNoSafe > 10000) {
           S.lastNoSafe = now;
           log('[Brain] no safe direction (edge / water / cave all around) - standing still');
@@ -1030,6 +1065,7 @@ function startBrain(slot, b) {
       }
     }
 
+    if (moving) S.still = '';
     if (Number.isFinite(S.yaw) && Number.isFinite(S.pitch)) b.look(S.yaw, S.pitch, true);
     b.setControlState('forward', moving);
     b.setControlState('sprint', moving && sprint);
@@ -1046,8 +1082,8 @@ function startBrain(slot, b) {
     const p = b.entity.position;
     const moved = Math.hypot(p.x - S.beatX, p.z - S.beatZ);
     S.beatX = p.x; S.beatZ = p.z;
-    log(`[Brain] mode=${S.mode} pos=(${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) hp=${Math.round(b.health)} food=${b.food} moved2m=${moved.toFixed(1)}`);
-  }, 120000);
+    log(`[Brain] mode=${S.mode} pos=(${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) hp=${Math.round(b.health)} food=${b.food} moved1m=${moved.toFixed(1)}${S.still ? ` STILL: ${S.still}` : ''}`);
+  }, 60000);
 }
 
 // ============================================================
