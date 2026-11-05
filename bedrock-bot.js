@@ -28,6 +28,55 @@ const startTime = Date.now();
 let stopping = false;
 const slots = [];
 
+// Minecraft version the bots speak. Pinned value wins; if blank we auto-detect, and after an
+// "invalid player movement" kick we fall back to 1.21.1 automatically.
+let autoFallbackVersion = null;
+const pinnedVersion = () => process.env.MC_VERSION || config.server.version || '';
+const useVersion = () => pinnedVersion() || autoFallbackVersion || undefined;
+
+// Never let a NaN/Infinity movement packet leave the bot (the server kicks for those).
+const MOVE_PACKETS = new Set(['position', 'position_look', 'look', 'flying', 'vehicle_move',
+  'move_player_pos', 'move_player_pos_rot', 'move_player_rot']);
+function guardPackets(slot, b) {
+  const c = b._client;
+  if (!c || c.__guarded) return;
+  c.__guarded = true;
+  const orig = c.write.bind(c);
+  let logged = 0;
+  c.write = (name, params) => {
+    if (MOVE_PACKETS.has(name) && params) {
+      for (const k of ['x', 'y', 'z', 'yaw', 'pitch']) {
+        const v = params[k];
+        if (typeof v === 'number' && !Number.isFinite(v)) {
+          if (logged++ < 5) slot.log(`[Guard] dropped ${name} packet with invalid ${k}=${v}`);
+          return undefined;
+        }
+      }
+    }
+    return orig(name, params);
+  };
+}
+
+// If the physics engine ever produces a NaN position/rotation, restore the last good one.
+function guardModule(slot, b) {
+  let good = null;
+  let lastLog = 0;
+  b.on('physicsTick', () => {
+    const e = b.entity;
+    if (!e || !e.position) return;
+    const p = e.position;
+    if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) {
+      good = { x: p.x, y: p.y, z: p.z };
+    } else if (good) {
+      p.set(good.x, good.y, good.z);
+      if (e.velocity) e.velocity.set(0, 0, 0);
+      if (Date.now() - lastLog > 10000) { lastLog = Date.now(); slot.log('[Guard] position was NaN - restored'); }
+    }
+    if (!Number.isFinite(e.yaw)) e.yaw = 0;
+    if (!Number.isFinite(e.pitch)) e.pitch = 0;
+  });
+}
+
 // ============================================================
 // DISCORD
 // ============================================================
@@ -155,7 +204,7 @@ class Slot {
     this.pinRuns = 0;
     this.lastKick = '';
     const t0 = Date.now();
-    this.log(`connecting to ${config.server.ip}:${config.server.port}`);
+    this.log(`connecting to ${config.server.ip}:${config.server.port} (version ${useVersion() || 'auto'})`);
 
     let b;
     try {
@@ -164,7 +213,7 @@ class Slot {
         auth: 'offline',
         host: config.server.ip,
         port: config.server.port,
-        version: config.server.version || undefined, // blank = auto-detect
+        version: useVersion(),
         hideErrors: false,
         checkTimeoutInterval: 120000,
         viewDistance: 'short',
@@ -176,6 +225,7 @@ class Slot {
     }
     this.bot = b;
     b.loadPlugin(pathfinder);
+    guardPackets(this, b);
     setupAuth(this, b);
     setupPin(this, b);
 
@@ -206,6 +256,14 @@ class Slot {
       this.lastKick = txt;
       this.log('[KICK]', txt);
       if (this.diag) this.log('[KICK] last movement state:', JSON.stringify(this.diag));
+      if (/invalid_player_movement/.test(txt)) {
+        if (!pinnedVersion() && !autoFallbackVersion) {
+          autoFallbackVersion = '1.21.1';
+          this.log('[Version] invalid movement kick on auto-detected version - switching to 1.21.1 for all bots');
+        } else {
+          this.log(`[Version] invalid movement kick on version ${useVersion()} - try another value in settings.json server.version`);
+        }
+      }
     });
 
     b.on('error', (err) => this.log('error:', err.message));
@@ -343,7 +401,10 @@ function setupPin(slot, b) {
   const P = config.utils && config.utils['pin-auth'];
   if (!P || P.enabled === false) return;
   const pin = String(process.env.BOT_PIN || P.pin || '');
-  if (!/^\d{4,12}$/.test(pin)) { slot.log('[PIN] no valid PIN set (utils.pin-auth.pin or BOT_PIN secret)'); return; }
+  if (!/^\d{4,12}$/.test(pin)) {
+    if (!global.__pinWarned) { global.__pinWarned = true; slot.log('[PIN] no PIN set (utils.pin-auth.pin or BOT_PIN secret) - keypad login is skipped'); }
+    return;
+  }
   const needle = String(P['window-title-contains'] === undefined ? 'Kodeshi' : P['window-title-contains']).toLowerCase();
   const manual = P.slots || {};
   const delay = P['click-delay-ms'] || 450;
@@ -392,6 +453,7 @@ function setupPin(slot, b) {
 // PER-BOT MODULES
 // ============================================================
 function initializeSlot(slot, b) {
+  guardModule(slot, b);
   if (config.movement && config.movement.enabled !== false) startBrain(slot, b);
   if (config.modules && config.modules.beds) bedModule(slot, b);
   if (config.modules && config.modules.chat) chatModule(slot, b);
@@ -1119,7 +1181,7 @@ if (maxRuntimeMs > 0) setTimeout(() => shutdown('runtime limit reached - next ru
 console.log('='.repeat(50));
 console.log('  Minecraft AFK Players v5');
 console.log('='.repeat(50));
-console.log(`Server: ${config.server.ip}:${config.server.port}  Version: ${config.server.version || 'auto'}`);
+console.log(`Server: ${config.server.ip}:${config.server.port}  Version: ${useVersion() || 'auto'}`);
 console.log(`Random names: ${R['randomize-names'] === true ? 'ON' : 'off'}  |  Schedule: ${SC.enabled === false ? 'off' : 'ON'}  |  Node ${process.version}`);
 slots.forEach((s) => console.log(`  ${s.index + 1}. ${s.cfg.name}  enabled=${s.cfg.enabled !== false}  stay=${s.cfg.stay === true}`));
 
