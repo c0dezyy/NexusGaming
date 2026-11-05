@@ -3,7 +3,7 @@
   "server": {
     "ip": "15.235.165.81",
     "port": 26162,
-    "version": ""
+    "version": "1.21.1"
   },
   "roster": {
     "randomize-names": false,
@@ -11,11 +11,11 @@
     "players": [
       { "name": "MarkGaming843", "enabled": true, "stay": true },
       { "name": "NexusGaming019", "enabled": true, "stay": true },
-      { "name": "NeoRofusSs", "enabled": true, "stay": true },
-      { "name": "Maltosefrud", "enabled": true, "stay": false },
-      { "name": "NidoSquishy466", "enabled": true, "stay": false },
-      { "name": "NathanIsFree", "enabled": true, "stay": false },
-      { "name": "Mesotopia887", "enabled": true, "stay": false }
+      { "name": "PandoraFer789", "enabled": true, "stay": true },
+      { "name": "Player4", "enabled": true, "stay": false },
+      { "name": "Player5", "enabled": true, "stay": false },
+      { "name": "Player6", "enabled": true, "stay": false },
+      { "name": "Player7", "enabled": true, "stay": false }
     ]
   },
   "schedule": {
