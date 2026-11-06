@@ -26,6 +26,13 @@ jobs:
         with:
           node-version: 22
 
+      - name: Restore bot memory (friends / reputation)
+        uses: actions/cache/restore@v4
+        with:
+          path: memory.json
+          key: bot-memory-${{ github.run_id }}
+          restore-keys: bot-memory-
+
       - name: Install
         run: npm install --no-audit --no-fund
 
@@ -34,13 +41,21 @@ jobs:
           MAX_RUNTIME_MIN: '340'
           BOT_PIN: ${{ secrets.BOT_PIN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          PROXY_HOST: ${{ secrets.PROXY_HOST }}
+          PROXY_PORT: ${{ secrets.PROXY_PORT }}
+          PROXY_USER: ${{ secrets.PROXY_USER }}
+          PROXY_PASS: ${{ secrets.PROXY_PASS }}
         run: node bedrock-bot.js
+
+      - name: Save bot memory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: memory.json
+          key: bot-memory-${{ github.run_id }}
 
       - name: Start next run
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run bot.yml
-
-
-   
+        run: gh workflow run "${{ github.workflow }}" --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
