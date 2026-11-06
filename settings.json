@@ -6,11 +6,11 @@
     "version": "1.21.1"
   },
   "proxy": {
-    "enabled": false,
-    "host": "",
-    "port": 1080,
-    "username": "",
-    "password": ""
+    "enabled": true,
+    "host": "198.23.243.226",
+    "port": 6361,
+    "username": "guziogct",
+    "password": "psgiub18ygco"
   },
   "roster": {
     "randomize-names": true,
