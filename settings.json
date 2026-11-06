@@ -5,17 +5,24 @@
     "port": 26162,
     "version": "1.21.1"
   },
+  "proxy": {
+    "enabled": false,
+    "host": "",
+    "port": 1080,
+    "username": "",
+    "password": ""
+  },
   "roster": {
     "randomize-names": true,
     "name-pool": [],
     "players": [
-      { "name": "MarkGaming843", "enabled": true, "stay": true },
-      { "name": "NexusGaming019", "enabled": true, "stay": true },
-      { "name": "PandoraFer789", "enabled": true, "stay": true },
-      { "name": "NidoSquishy07", "enabled": true, "stay": false },
-      { "name": "Ferrdus9", "enabled": true, "stay": false },
-      { "name": "VinceForU31", "enabled": true, "stay": false },
-      { "name": "Mell3in", "enabled": true, "stay": false }
+      { "name": "MarkGaming843", "enabled": true, "stay": true, "role": "farmer" },
+      { "name": "NexusGaming019", "enabled": true, "stay": true, "role": "socializer" },
+      { "name": "Player3", "enabled": true, "stay": true, "role": "random" },
+      { "name": "Player4", "enabled": true, "stay": false, "role": "random" },
+      { "name": "Player5", "enabled": true, "stay": false, "role": "random" },
+      { "name": "Player6", "enabled": true, "stay": false, "role": "random" },
+      { "name": "Player7", "enabled": true, "stay": false, "role": "random" }
     ]
   },
   "schedule": {
@@ -44,7 +51,7 @@
       "slots": {},
       "confirm-slot": null,
       "click-delay-ms": 450,
-      "first-delay-ms": 800
+      "first-delay-ms": 1000
     },
     "auto-creative": false,
     "chat-log": true,
@@ -61,6 +68,35 @@
       "night-rest": false,
       "sprint-chance": 0.4
     }
+  },
+  "combat": {
+    "enabled": true,
+    "engage-range": 8,
+    "fight-mobs": ["zombie", "zombie_villager", "husk", "drowned", "skeleton", "stray", "bogged", "spider", "cave_spider", "slime", "silverfish", "endermite", "witch"],
+    "retaliate-hits": 3,
+    "retaliate-window-seconds": 12,
+    "retaliate-seconds": 30,
+    "assist": true
+  },
+  "human": {
+    "enabled": true,
+    "explore-radius": 45,
+    "activities": {
+      "farm": true,
+      "fish": true,
+      "breed": true,
+      "cook": true,
+      "explore": true,
+      "social": true,
+      "follow": true,
+      "chat": true,
+      "rest": true
+    }
+  },
+  "chat": {
+    "enabled": true,
+    "idle-chatter": true,
+    "bot-answer": "yep, I'm one of the server's helper bots, but I'm happy to chat"
   },
   "hunt": {
     "enabled": true,
@@ -79,8 +115,7 @@
     "flee-health": 8
   },
   "modules": {
-    "beds": true,
-    "chat": true
+    "beds": true
   },
   "beds": {
     "place-night": true
@@ -92,8 +127,5 @@
       "connect": true,
       "disconnect": true
     }
-  },
-  "chat": {
-    "respond": false
   }
 }
