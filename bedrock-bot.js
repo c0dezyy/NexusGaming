@@ -11,6 +11,7 @@ const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const config = require('./settings.json');
 const express = require('express');
+const human = require('./human');
 const http = require('http');
 const https = require('https');
 const readline = require('readline');
@@ -33,6 +34,57 @@ const slots = [];
 let autoFallbackVersion = null;
 const pinnedVersion = () => process.env.MC_VERSION || config.server.version || '';
 const useVersion = () => pinnedVersion() || autoFallbackVersion || undefined;
+
+// Optional SOCKS5 proxy: every bot leaves through the same fixed IP (set a proxy with a static IP).
+function proxyConfig() {
+  const P = config.proxy || {};
+  const host = process.env.PROXY_HOST || (P.enabled ? P.host : '');
+  if (!host) return null;
+  return {
+    host,
+    port: parseInt(process.env.PROXY_PORT || P.port || '1080', 10),
+    user: process.env.PROXY_USER || P.username || '',
+    pass: process.env.PROXY_PASS || P.password || '',
+  };
+}
+function socksOptions(px, destination) {
+  return {
+    proxy: { host: px.host, port: px.port, type: 5, userId: px.user || undefined, password: px.pass || undefined },
+    command: 'connect',
+    destination,
+    timeout: 20000,
+  };
+}
+function proxyConnector(px) {
+  const { SocksClient } = require('socks');
+  return (client) => {
+    SocksClient.createConnection(socksOptions(px, { host: config.server.ip, port: config.server.port }))
+      .then((info) => { client.setSocket(info.socket); client.emit('connect'); })
+      .catch((err) => client.emit('error', err));
+  };
+}
+function checkPublicIp() {
+  const px = proxyConfig();
+  const done = (ip) => console.log(`[Net] IP the server sees: ${ip}${px ? ` (via proxy ${px.host})` : ' (direct - this changes on every GitHub Actions run)'}`);
+  const body = (txt) => (String(txt).split('\r\n\r\n').pop() || '').trim();
+  if (!px) {
+    http.get('http://api.ipify.org', (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; });
+      res.on('end', () => done(body(d)));
+    }).on('error', (e) => console.log('[Net] IP check failed:', e.message));
+    return;
+  }
+  try {
+    const { SocksClient } = require('socks');
+    SocksClient.createConnection(socksOptions(px, { host: 'api.ipify.org', port: 80 })).then((info) => {
+      let d = '';
+      info.socket.on('data', (c) => { d += c; });
+      info.socket.on('end', () => done(body(d)));
+      info.socket.write('GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n');
+    }).catch((e) => console.log('[Net] proxy check failed (bots cannot connect without it):', e.message));
+  } catch (e) { console.log('[Net] the "socks" package is missing - run npm install'); }
+}
 
 // Never let a NaN/Infinity movement packet leave the bot (the server kicks for those).
 const MOVE_PACKETS = new Set(['position', 'position_look', 'look', 'flying', 'vehicle_move',
@@ -210,7 +262,7 @@ class Slot {
 
     let b;
     try {
-      b = mineflayer.createBot({
+      const opts = {
         username: this.name,
         auth: 'offline',
         host: config.server.ip,
@@ -219,7 +271,10 @@ class Slot {
         hideErrors: false,
         checkTimeoutInterval: 120000,
         viewDistance: 'short',
-      });
+      };
+      const px = proxyConfig();
+      if (px) opts.connect = proxyConnector(px);
+      b = mineflayer.createBot(opts);
     } catch (err) {
       this.log('failed to create bot:', err.message);
       this.onEnded('create failed');
@@ -489,7 +544,6 @@ function initializeSlot(slot, b) {
   guardModule(slot, b);
   if (config.movement && config.movement.enabled !== false) startBrain(slot, b);
   if (config.modules && config.modules.beds) bedModule(slot, b);
-  if (config.modules && config.modules.chat) chatModule(slot, b);
 
   const auth = (config.utils && config.utils['auto-auth']) || {};
   if (auth.enabled !== false && auth['proactive-login'] === true) {
@@ -513,19 +567,6 @@ function bedModule(slot, b) {
   }, 10000);
 }
 
-function chatModule(slot, b) {
-  let lastGreet = 0;
-  b.on('chat', (username, message) => {
-    if (!(config.chat && config.chat.respond)) return;
-    if (leadSlot() !== slot) return; // only one bot answers
-    if (slots.some((s) => s.name === username)) return;
-    if (/\b(hello|hi|hey)\b/i.test(message) && Date.now() - lastGreet > 15000) {
-      lastGreet = Date.now();
-      b.chat(`Hello, ${username}!`);
-    }
-  });
-}
-
 // ============================================================
 // BRAIN
 //  priority: flee hostiles > eat > go home if too far/deep > visit joining players
@@ -541,7 +582,7 @@ const RADIUS = { creeper: 9, skeleton: 16, stray: 16, pillager: 18, witch: 12, g
 const AIR = new Set(['air', 'cave_air', 'void_air']);
 const DANGER = new Set(['lava', 'water', 'fire', 'soul_fire', 'cactus', 'magma_block', 'campfire', 'soul_campfire', 'sweet_berry_bush', 'powder_snow', 'cobweb']);
 const NO_EAT = new Set(['rotten_flesh', 'spider_eye', 'poisonous_potato', 'pufferfish', 'suspicious_stew', 'golden_apple', 'enchanted_golden_apple', 'golden_carrot', 'chorus_fruit']);
-const PF = new Set(['hunt', 'collect', 'home']); // modes driven by the pathfinder
+const PF = new Set(['hunt', 'collect', 'home', 'task', 'fight']); // modes driven by the pathfinder
 const fin = (v, d) => (Number.isFinite(v) ? v : d);
 
 function startBrain(slot, b) {
@@ -570,6 +611,17 @@ function startBrain(slot, b) {
   const maxDescent = SF['max-descent'] || 4;
   const fleeHealth = SF['flee-health'] || 8;
 
+  const C = config.combat || {};
+  const combatEnabled = C.enabled !== false;
+  const engageRange = C['engage-range'] || 8;
+  const fightSet = new Set(C['fight-mobs'] || ['zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged',
+    'spider', 'cave_spider', 'slime', 'silverfish', 'endermite', 'witch']);
+  fightSet.delete('creeper'); // never melee creepers - always run
+  const retaliateHits = C['retaliate-hits'] || 3;
+  const retaliateWindow = (C['retaliate-window-seconds'] || 12) * 1000;
+  const retaliateFor = (C['retaliate-seconds'] || 30) * 1000;
+  const assistEnabled = C.assist !== false;
+
   const p0 = b.entity.position;
   let origin = config.position && config.position.enabled
     ? { x: config.position.x, y: config.position.y, z: config.position.z }
@@ -586,6 +638,7 @@ function startBrain(slot, b) {
     prey: null, preyDead: false, blacklist: {}, lastHit: 0, nextHunt: 0, huntBestD: 1e9, huntProgressT: 0,
     nextCollectScan: 0, nextHome: 0, pfFailed: false,
     eating: false, nextEat: 0,
+    foe: null, foeDead: false, nextFoeScan: 0, hostilePlayers: {}, fleeEntity: null, fleeUntil: 0, lastHurtAt: 0, hits: {}, swings: {},
     beatX: fin(p0.x, 0), beatZ: fin(p0.z, 0),
   };
   const T = { dark: false, deep: false };
@@ -629,12 +682,22 @@ function startBrain(slot, b) {
     stopControls();
   }
 
+  let hum = null;
   function setMode(m, ms) {
+    if (hum && S.mode === 'task' && m !== 'task') hum.cancelTask();
+    if (S.mode === 'fight' && m !== 'fight') S.foe = null;
     if (PF.has(S.mode) && !PF.has(m)) stopPathfinder();
     S.mode = m; S.modeStart = Date.now(); S.until = Date.now() + ms;
     slot.mode = m;
   }
   setMode('idle', 300);
+
+  hum = human.create({
+    slot, b, config, log, slots, leadSlot,
+    getOrigin: () => origin,
+    enterTask: (ms) => setMode('task', ms),
+    endTask: () => { if (S.mode === 'task') setMode('idle', rand(600, 1800)); },
+  });
 
   function computeUnsafeAhead(yaw) {
     const p = b.entity.position;
@@ -685,13 +748,25 @@ function startBrain(slot, b) {
     return null;
   }
 
+  // things to run away from: creepers & other dangerous mobs, mobs we cannot fight right now,
+  // and an attacker we gave up fighting
   function nearestThreat() {
     const me = b.entity.position;
-    const scale = b.health < fleeHealth ? 1.5 : 1;
+    const now = Date.now();
+    if (S.fleeEntity && now < S.fleeUntil && b.entities[S.fleeEntity.id]) return S.fleeEntity;
+    const lowHp = b.health < fleeHealth;
+    const scale = lowHp ? 1.5 : 1;
+    let nearFight = 0;
+    if (combatEnabled) {
+      for (const e of Object.values(b.entities)) {
+        if (e && e.position && fightSet.has(e.name) && Math.hypot(e.position.x - me.x, e.position.z - me.z) < 8) nearFight++;
+      }
+    }
     let best = null;
     let bd = 1e9;
     for (const e of Object.values(b.entities)) {
       if (!e || e === b.entity || !e.position || !HOSTILE.has(e.name)) continue;
+      if (combatEnabled && fightSet.has(e.name) && !lowHp && nearFight < 4) continue; // we fight these
       if (Math.abs(e.position.y - me.y) > 10) continue;
       const d = Math.hypot(e.position.x - me.x, e.position.z - me.z);
       if (d < (RADIUS[e.name] || 10) * scale && d < bd) { best = e; bd = d; }
@@ -835,17 +910,148 @@ function startBrain(slot, b) {
     b.pathfinder.setGoal(new goals.GoalNear(origin.x, origin.y, origin.z, 3));
   }
 
+  // ---------- fighting ----------
+  function resolveAssist(a) {
+    if (a.player) { const pl = b.players[a.player]; return pl && pl.entity ? pl.entity : null; }
+    let best = null;
+    let bd = 12;
+    for (const e of Object.values(b.entities)) {
+      if (!e || !e.position || !fightSet.has(e.name)) continue;
+      const d = Math.hypot(e.position.x - a.pos.x, e.position.z - a.pos.z);
+      if (d < bd) { best = e; bd = d; }
+    }
+    return best;
+  }
+
+  function pickFoe(now) {
+    if (!combatEnabled || b.health < 10) return null;
+    const me = b.entity.position;
+    for (const [name, until] of Object.entries(S.hostilePlayers)) {
+      if (until < now) { delete S.hostilePlayers[name]; continue; }
+      const pl = b.players[name];
+      if (pl && pl.entity && pl.entity.position.distanceTo(me) < 16) return pl.entity;
+    }
+    let best = null;
+    let bd = engageRange;
+    for (const e of Object.values(b.entities)) {
+      if (!e || e === b.entity || !e.position || !fightSet.has(e.name)) continue;
+      if (Math.abs(e.position.y - me.y) > 4) continue;
+      const d = e.position.distanceTo(me);
+      if (d < bd) { best = e; bd = d; }
+    }
+    if (best) return best;
+    if (assistEnabled) {
+      const a = hum.assistFor(me);
+      if (a) { const e = resolveAssist(a); if (e) return e; }
+    }
+    return null;
+  }
+
+  function startFight(foe) {
+    S.foe = foe; S.foeDead = false; S.pfFailed = false; S.lastHit = 0;
+    const isPlayer = foe.type === 'player';
+    setMode('fight', isPlayer ? retaliateFor : 25000);
+    b.pathfinder.setGoal(new goals.GoalFollow(foe, 1.6), true);
+    equipWeapon();
+    hum.feel('angry', 20000);
+    log(`[Fight] engaging ${foe.username || foe.name}`);
+  }
+
+  function fightTick(now) {
+    const foe = S.foe;
+    const alive = foe && !S.foeDead && b.entities[foe.id];
+    const isPlayer = !!foe && foe.type === 'player';
+    if (!alive || now > S.until || (isPlayer && !(S.hostilePlayers[foe.username] > now))) {
+      if (foe && S.foeDead && !isPlayer) hum.onKill();
+      if (foe && isPlayer && !alive) delete S.hostilePlayers[foe.username]; // we won / they are gone
+      log(`[Fight] over (${alive ? 'timeout' : 'target gone'})`);
+      S.foe = null; S.nextFoeScan = now + 1500;
+      setMode('idle', 600);
+      return;
+    }
+    if (b.health < fleeHealth) {
+      log('[Fight] health low - running away');
+      S.fleeEntity = foe; S.fleeUntil = now + 8000;
+      hum.feel('scared', 15000);
+      S.foe = null;
+      setMode('idle', 300);
+      return;
+    }
+    const d = b.entity.position.distanceTo(foe.position);
+    if (d > 26) { S.foe = null; setMode('idle', 600); return; }
+    if (d < 3.2) {
+      try { b.lookAt(foe.position.offset(0, (foe.height || 1.6) * 0.8, 0), true); } catch (e) { /* ignore */ }
+      if (now - S.lastHit > 550) {
+        S.lastHit = now;
+        try { b.attack(foe); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // who hurt us? mobs next to us, or a player who just swung at us (3 hits in a row = we fight back)
+  function onSelfHurt() {
+    const now = Date.now();
+    if (now - S.lastHurtAt < 300) return;
+    S.lastHurtAt = now;
+    const me = b.entity.position;
+    let mob = null;
+    let md = 5;
+    for (const e of Object.values(b.entities)) {
+      if (!e || e === b.entity || !e.position || !HOSTILE.has(e.name)) continue;
+      const d = e.position.distanceTo(me);
+      if (d < md) { mob = e; md = d; }
+    }
+    if (mob) {
+      hum.onHurt('mob', mob.name);
+      if (assistEnabled && fightSet.has(mob.name)) hum.reportAttack(me, null);
+      return;
+    }
+    let attacker = null;
+    let pd = 6.5;
+    for (const pl of Object.values(b.players)) {
+      const e = pl.entity;
+      if (!e || e === b.entity || slots.some((s) => s.name === pl.username)) continue;
+      if (now - (S.swings[e.id] || 0) > 700) continue;
+      const d = e.position.distanceTo(me);
+      if (d < pd) { attacker = pl; pd = d; }
+    }
+    if (!attacker) return; // fall damage, fire, hunger...
+    const name = attacker.username;
+    const arr = (S.hits[name] = (S.hits[name] || []).filter((t) => now - t < retaliateWindow));
+    arr.push(now);
+    hum.onHurt('player', name);
+    hum.onPlayerHit(name, arr.length);
+    const need = retaliateHits + (hum.friendship(name) >= 8 ? 2 : 0);
+    if (arr.length >= need && !(S.hostilePlayers[name] > now)) {
+      S.hostilePlayers[name] = now + retaliateFor;
+      hum.onRetaliate(name);
+      if (assistEnabled) hum.reportAttack(me, name);
+    }
+  }
+
+  b.on('entitySwingArm', (e) => { if (e) S.swings[e.id] = Date.now(); });
+  b.on('entityHurt', (e) => {
+    if (e !== b.entity) return;
+    try { onSelfHurt(); } catch (err) { log('[Fight] error:', err.message); }
+  });
+
   // ---------- visiting joining players (never our own bots) ----------
   b.on('playerJoined', (pl) => {
     if (!pl || !pl.username || pl.username === b.username) return;
     if (slots.some((s) => s.name === pl.username)) return;
+    hum.onPlayerJoined(pl.username);
     if (Date.now() - (S.lastVisit[pl.username] || 0) < 10 * 60 * 1000) return;
     S.lastVisit[pl.username] = Date.now();
     S.visit.push({ name: pl.username, at: Date.now() + rand(4000, 9000), tries: 0 });
   });
 
-  b.on('entityDead', (e) => { if (S.prey && e && e.id === S.prey.id) S.preyDead = true; });
-  b.on('entityGone', (e) => { if (S.prey && e && e.id === S.prey.id) S.preyDead = true; });
+  const markDead = (e) => {
+    if (!e) return;
+    if (S.prey && e.id === S.prey.id) S.preyDead = true;
+    if (S.foe && e.id === S.foe.id) S.foeDead = true;
+  };
+  b.on('entityDead', markDead);
+  b.on('entityGone', markDead);
 
   // ---------- death / respawn ----------
   function respawnNow() {
@@ -860,7 +1066,9 @@ function startBrain(slot, b) {
     log('died - respawning');
     discord(`[x] **${slot.name}** died - respawning`, 0xf87171);
     stopPathfinder();
-    S.prey = null; S.visitTarget = null; S.eating = false;
+    S.prey = null; S.foe = null; S.visitTarget = null; S.eating = false;
+    hum.cancelTask();
+    hum.onDeath();
     S.mode = 'idle'; slot.mode = 'idle'; S.until = Date.now() + 3000;
     slot.addTimeout(respawnNow, 700);
     let tries = 0;
@@ -880,6 +1088,7 @@ function startBrain(slot, b) {
       S.t0 = Date.now(); S.ready = false;
       setMode('idle', 1500);
       log('respawned - new home point set');
+      hum.onRespawn();
     }, 1200);
     slot.timers.push(resetT);
   };
@@ -940,10 +1149,18 @@ function startBrain(slot, b) {
       S.nextEat = now + 5000;
     }
 
+    // fight mobs that come at us (not creepers) and players who keep hitting us
+    if (!threat && combatEnabled && S.mode !== 'fight' && now > S.nextFoeScan) {
+      S.nextFoeScan = now + 400;
+      const foe = pickFoe(now);
+      if (foe) startFight(foe);
+    }
+
     let moving = false;
     let sprint = false;
 
     if (threat) {
+      if (threat.name === 'creeper') hum.onCreeper();
       if (S.mode !== 'flee') setMode('flee', 3000);
       S.until = now + 3000;
       S.heading = yawTo(threat.position.x, threat.position.z) + Math.PI + rand(-0.25, 0.25);
@@ -951,6 +1168,10 @@ function startBrain(slot, b) {
       sprint = b.food > 6;
     } else if (S.mode === 'flee') {
       setMode('idle', rand(1000, 2000));
+    } else if (S.mode === 'fight') {
+      fightTick(now);
+    } else if (S.mode === 'task') {
+      if (now > S.until) setMode('idle', 800);
     } else if (S.mode === 'hunt') {
       huntTick(now, p);
     } else if (S.mode === 'collect') {
@@ -974,6 +1195,8 @@ function startBrain(slot, b) {
         } else if (!resting && huntEnabled && b.health >= 10 && now > S.nextHunt
           && (huntAlways || (b.food < 18 && !pickFood()))) {
           if (!startHunt(now)) S.nextHunt = now + 8000;
+        } else if (!resting && (() => { const act = hum.pickActivity(); return act ? hum.startTask(act) : false; })()) {
+          // a human-like goal started (farm / fish / explore / socialize ...)
         } else if (resting) {
           S.until = now + rand(4000, 9000);
         } else {
@@ -1082,7 +1305,7 @@ function startBrain(slot, b) {
     const p = b.entity.position;
     const moved = Math.hypot(p.x - S.beatX, p.z - S.beatZ);
     S.beatX = p.x; S.beatZ = p.z;
-    log(`[Brain] mode=${S.mode} pos=(${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) hp=${Math.round(b.health)} food=${b.food} moved1m=${moved.toFixed(1)}${S.still ? ` STILL: ${S.still}` : ''}`);
+    log(`[Brain] ${slot.role} mood=${slot.mood} mode=${S.mode}${slot.activity ? ':' + slot.activity : ''} pos=(${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) hp=${Math.round(b.health)} food=${b.food} moved1m=${moved.toFixed(1)}${S.still ? ` STILL: ${S.still}` : ''}`);
   }, 60000);
 }
 
@@ -1125,7 +1348,7 @@ async function u(){
       var dot=document.createElement('span');dot.className='dot';dot.style.background=colors[p.status]||'#64748b';
       var n=document.createElement('span');n.className='n';n.textContent=p.name;
       var s=document.createElement('span');s.className='s';
-      s.textContent=p.status+(p.status==='online'?' - '+p.mode:'')+(p.coords?' ('+Math.floor(p.coords.x)+', '+Math.floor(p.coords.y)+', '+Math.floor(p.coords.z)+')':'');
+      s.textContent=p.status+(p.status==='online'?' - '+p.mode+(p.role?' - '+p.role+' ('+p.mood+')':''):'')+(p.coords?' ('+Math.floor(p.coords.x)+', '+Math.floor(p.coords.y)+', '+Math.floor(p.coords.z)+')':'');
       row.appendChild(dot);row.appendChild(n);row.appendChild(s);list.appendChild(row);
     });
   }catch(e){document.getElementById('sum').innerText='offline';}
@@ -1148,7 +1371,9 @@ app.get('/health', (req, res) => {
     players: slots.map((s) => ({
       name: s.name,
       status: s.status,
-      mode: s.mode,
+      mode: s.activity ? `${s.mode}:${s.activity}` : s.mode,
+      role: s.role || '',
+      mood: s.mood || '',
       coords: s.bot && s.bot.entity ? s.bot.entity.position : null,
     })),
   });
@@ -1192,6 +1417,7 @@ rl.on('line', (line) => {
 function shutdown(why) {
   if (stopping) return;
   stopping = true;
+  human.saveSocial();
   console.log(`[System] Shutting down (${why})`);
   for (const s of slots) {
     clearTimeout(s.connTimer);
@@ -1221,4 +1447,5 @@ console.log(`Server: ${config.server.ip}:${config.server.port}  Version: ${useVe
 console.log(`Random names: ${R['randomize-names'] === true ? 'ON' : 'off'}  |  Schedule: ${SC.enabled === false ? 'off' : 'ON'}  |  Node ${process.version}`);
 slots.forEach((s) => console.log(`  ${s.index + 1}. ${s.cfg.name}  enabled=${s.cfg.enabled !== false}  stay=${s.cfg.stay === true}`));
 
+checkPublicIp();
 slots.forEach((s) => { if (s.cfg.enabled !== false) queueConnect(s, 0); });
