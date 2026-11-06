@@ -80,7 +80,7 @@
   },
   "human": {
     "enabled": true,
-    "explore-radius": 45,
+    "explore-radius": 100,
     "activities": {
       "farm": true,
       "fish": true,
