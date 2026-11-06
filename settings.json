@@ -62,11 +62,11 @@
   "movement": {
     "enabled": true,
     "wander": {
-      "leash": 22,
+      "leash": 35,
       "night-leash": 12,
-      "visit-distance": 14,
+      "visit-distance": 20,
       "night-rest": false,
-      "sprint-chance": 0.4
+      "sprint-chance": 0.25
     }
   },
   "combat": {
@@ -80,7 +80,7 @@
   },
   "human": {
     "enabled": true,
-    "explore-radius": 100,
+    "explore-radius": 200,
     "activities": {
       "farm": true,
       "fish": true,
@@ -101,7 +101,7 @@
   "hunt": {
     "enabled": true,
     "always": false,
-    "range": 24,
+    "range": 30,
     "animals": ["cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"]
   },
   "eat": {
