@@ -29,7 +29,7 @@
     "enabled": true,
     "min-online": 3,
     "stagger-seconds": { "min": 8, "max": 20 },
-    "session-minutes": { "min": 60, "max": 360 },
+    "session-minutes": { "min": 30, "max": 50 },
     "rejoin-minutes": { "min": 10, "max": 20 }
   },
   "position": {
