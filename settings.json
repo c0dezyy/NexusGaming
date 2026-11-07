@@ -7,10 +7,10 @@
   },
   "proxy": {
     "enabled": true,
-    "host": "198.23.243.226",
-    "port": 6361,
-    "username": "guziogct",
-    "password": "psgiub18ygco"
+    "host": "104.207.62.86",
+    "port": 3129,
+    "username": "s1mbqfp88nrz",
+    "password": "3vfufd1rxxuayj1"
   },
   "roster": {
     "randomize-names": true,
@@ -19,7 +19,7 @@
       { "name": "MarkGaming843", "enabled": true, "stay": true, "role": "farmer" },
       { "name": "NexusGaming019", "enabled": true, "stay": true, "role": "socializer" },
       { "name": "Player3", "enabled": true, "stay": false, "role": "random" },
-      { "name": "Player4", "enabled": true, "stay": false, "role": "random" },
+      { "name": "Player4", "enabled": false, "stay": false, "role": "random" },
       { "name": "Player5", "enabled": false, "stay": false, "role": "random" },
       { "name": "Player6", "enabled": false, "stay": false, "role": "random" },
       { "name": "Player7", "enabled": false, "stay": false, "role": "random" }
