@@ -6,7 +6,7 @@
     "version": "1.21.1"
   },
   "proxy": {
-    "enabled": false,
+    "enabled": true,
     "host": "104.207.62.86",
     "port": 1081,
     "username": "s1mbqfp88nrz",
