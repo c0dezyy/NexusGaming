@@ -20,7 +20,7 @@
     "budget-safety": 0.9
   },
   "roster": {
-    "randomize-names": false,
+    "randomize-names": true,
     "name-pool": [],
     "players": [
       {
