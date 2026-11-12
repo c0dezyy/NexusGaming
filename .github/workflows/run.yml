@@ -29,7 +29,9 @@ jobs:
       - name: Restore bot memory (friends / reputation)
         uses: actions/cache/restore@v4
         with:
-          path: memory.json
+          path: |
+            memory.json
+            traffic.json
           key: bot-memory-${{ github.run_id }}
           restore-keys: bot-memory-
 
@@ -39,6 +41,7 @@ jobs:
       - name: Run bot
         env:
           MAX_RUNTIME_MIN: '340'
+          BOT_ADMIN_PIN: ${{ secrets.BOT_ADMIN_PIN }}
           BOT_PIN: ${{ secrets.BOT_PIN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           PROXY_HOST: ${{ secrets.PROXY_HOST }}
@@ -51,7 +54,9 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: memory.json
+          path: |
+            memory.json
+            traffic.json
           key: bot-memory-${{ github.run_id }}
 
       - name: Start next run
