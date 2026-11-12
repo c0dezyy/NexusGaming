@@ -169,8 +169,8 @@
     }
   },
   "chat": {
-    "enabled": true,
-    "idle-chatter": true,
+    "enabled": false,
+    "idle-chatter": false,
     "bot-answer": "yep, I'm one of the server's helper bots, but I'm happy to chat"
   },
   "hunt": {
