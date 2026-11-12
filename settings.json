@@ -6,31 +6,89 @@
     "version": "1.21.1"
   },
   "proxy": {
-    "enabled": true,
-    "host": "104.207.62.86",
-    "port": 1081,
-    "username": "s1mbqfp88nrz",
-    "password": "3vfufd1rxxuayj1"
+    "enabled": false,
+    "type": "auto",
+    "host": "",
+    "port": 3129,
+    "username": "",
+    "password": "",
+    "view-distance": "tiny",
+    "eco": true,
+    "schedule-leave": false,
+    "budget-gb": 10,
+    "budget-days": 365,
+    "budget-safety": 0.9
   },
   "roster": {
-    "randomize-names": true,
+    "randomize-names": false,
     "name-pool": [],
     "players": [
-      { "name": "MarkGaming843", "enabled": true, "stay": true, "role": "farmer" },
-      { "name": "NexusGaming019", "enabled": true, "stay": true, "role": "socializer" },
-      { "name": "Player3", "enabled": true, "stay": false, "role": "random" },
-      { "name": "Player4", "enabled": false, "stay": false, "role": "random" },
-      { "name": "Player5", "enabled": false, "stay": false, "role": "random" },
-      { "name": "Player6", "enabled": false, "stay": false, "role": "random" },
-      { "name": "Player7", "enabled": false, "stay": false, "role": "random" }
+      {
+        "name": "MarkGaming843",
+        "enabled": true,
+        "stay": true,
+        "role": "farmer",
+        "proxy": true
+      },
+      {
+        "name": "NexusGaming019",
+        "enabled": true,
+        "stay": true,
+        "role": "socializer",
+        "proxy": true
+      },
+      {
+        "name": "Player3",
+        "enabled": true,
+        "stay": true,
+        "role": "random",
+        "proxy": true
+      },
+      {
+        "name": "Player4",
+        "enabled": false,
+        "stay": false,
+        "role": "random",
+        "proxy": true
+      },
+      {
+        "name": "Player5",
+        "enabled": false,
+        "stay": false,
+        "role": "random",
+        "proxy": true
+      },
+      {
+        "name": "Player6",
+        "enabled": false,
+        "stay": false,
+        "role": "random",
+        "proxy": true
+      },
+      {
+        "name": "Player7",
+        "enabled": false,
+        "stay": false,
+        "role": "random",
+        "proxy": true
+      }
     ]
   },
   "schedule": {
     "enabled": true,
     "min-online": 2,
-    "stagger-seconds": { "min": 8, "max": 20 },
-    "session-minutes": { "min": 30, "max": 50 },
-    "rejoin-minutes": { "min": 10, "max": 20 }
+    "stagger-seconds": {
+      "min": 8,
+      "max": 20
+    },
+    "session-minutes": {
+      "min": 60,
+      "max": 360
+    },
+    "rejoin-minutes": {
+      "min": 10,
+      "max": 20
+    }
   },
   "position": {
     "enabled": false,
@@ -47,11 +105,14 @@
     "pin-auth": {
       "enabled": true,
       "pin": "",
+      "secret": "",
+      "length": 6,
       "window-title-contains": "Kodeshi",
       "slots": {},
-      "confirm-slot": null,
+      "confirm-slot": 53,
       "click-delay-ms": 450,
-      "first-delay-ms": 1000
+      "first-delay-ms": 1000,
+      "admin-pin": ""
     },
     "auto-creative": false,
     "chat-log": true,
@@ -62,17 +123,31 @@
   "movement": {
     "enabled": true,
     "wander": {
-      "leash": 35,
+      "leash": 22,
       "night-leash": 12,
-      "visit-distance": 20,
+      "visit-distance": 14,
       "night-rest": false,
-      "sprint-chance": 0.25
+      "sprint-chance": 0.4
     }
   },
   "combat": {
     "enabled": true,
     "engage-range": 8,
-    "fight-mobs": ["zombie", "zombie_villager", "husk", "drowned", "skeleton", "stray", "bogged", "spider", "cave_spider", "slime", "silverfish", "endermite", "witch"],
+    "fight-mobs": [
+      "zombie",
+      "zombie_villager",
+      "husk",
+      "drowned",
+      "skeleton",
+      "stray",
+      "bogged",
+      "spider",
+      "cave_spider",
+      "slime",
+      "silverfish",
+      "endermite",
+      "witch"
+    ],
     "retaliate-hits": 3,
     "retaliate-window-seconds": 12,
     "retaliate-seconds": 30,
@@ -80,7 +155,7 @@
   },
   "human": {
     "enabled": true,
-    "explore-radius": 200,
+    "explore-radius": 45,
     "activities": {
       "farm": true,
       "fish": true,
@@ -94,15 +169,22 @@
     }
   },
   "chat": {
-    "enabled": false,
+    "enabled": true,
     "idle-chatter": true,
     "bot-answer": "yep, I'm one of the server's helper bots, but I'm happy to chat"
   },
   "hunt": {
     "enabled": true,
     "always": false,
-    "range": 30,
-    "animals": ["cow", "pig", "sheep", "chicken", "rabbit", "mooshroom"]
+    "range": 24,
+    "animals": [
+      "cow",
+      "pig",
+      "sheep",
+      "chicken",
+      "rabbit",
+      "mooshroom"
+    ]
   },
   "eat": {
     "enabled": true,
